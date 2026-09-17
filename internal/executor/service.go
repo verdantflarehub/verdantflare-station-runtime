@@ -34,8 +34,15 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	if in.StationId != s.StationID {
 		return nil, status.Error(codes.PermissionDenied, "Station mismatch")
 	}
-	if in.RequestId == "" || len(in.RequestId) > 128 || !validName(in.AppId) || !versionPattern.MatchString(in.AppVersion) || !slices.Contains([]string{"install", "start", "stop", "restart", "delete"}, in.Action) {
+	if in.RequestId == "" || len(in.RequestId) > 128 || !validName(in.AppId) || !versionPattern.MatchString(in.AppVersion) || !slices.Contains([]string{"install", "start", "stop", "restart", "delete", "adopt"}, in.Action) {
 		return nil, status.Error(codes.InvalidArgument, "Invalid application command")
+	}
+	if in.Action == "adopt" {
+		if _, e := uuid.Parse(in.ExpectedWorkloadUid); e != nil {
+			return nil, status.Error(codes.InvalidArgument, "Expected workload UID required")
+		}
+	} else if in.ExpectedWorkloadUid != "" {
+		return nil, status.Error(codes.InvalidArgument, "Unexpected workload UID")
 	}
 	normalized := proto.Clone(in).(*pb.AppRequest)
 	normalized.RequestId = ""
@@ -99,6 +106,7 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	if time.Since(created) > timeout {
 		return s.finish(ctx, tx, in.OperationId, failed("SERVICE_UNAVAILABLE", "Runtime operation timed out; inspect workload before retrying"))
 	}
+	target.ExpectedUID = in.ExpectedWorkloadUid
 	result, err := s.Driver.Step(ctx, target, in.Action, in.OperationId, in.StationId, in.OrganizationId)
 	if err != nil {
 		// Kubernetes/network uncertainty is retryable; preserve the operation and start time.

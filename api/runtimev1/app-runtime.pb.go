@@ -22,17 +22,18 @@ const (
 )
 
 type AppRequest struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	OperationId    string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
-	RequestId      string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
-	UserId         string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OrganizationId string                 `protobuf:"bytes,4,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
-	StationId      string                 `protobuf:"bytes,5,opt,name=station_id,json=stationId,proto3" json:"station_id,omitempty"`
-	AppId          string                 `protobuf:"bytes,6,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
-	AppVersion     string                 `protobuf:"bytes,7,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
-	Action         string                 `protobuf:"bytes,8,opt,name=action,proto3" json:"action,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	state               protoimpl.MessageState `protogen:"open.v1"`
+	OperationId         string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
+	RequestId           string                 `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+	UserId              string                 `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrganizationId      string                 `protobuf:"bytes,4,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	StationId           string                 `protobuf:"bytes,5,opt,name=station_id,json=stationId,proto3" json:"station_id,omitempty"`
+	AppId               string                 `protobuf:"bytes,6,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	AppVersion          string                 `protobuf:"bytes,7,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
+	Action              string                 `protobuf:"bytes,8,opt,name=action,proto3" json:"action,omitempty"`
+	ExpectedWorkloadUid string                 `protobuf:"bytes,9,opt,name=expected_workload_uid,json=expectedWorkloadUid,proto3" json:"expected_workload_uid,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *AppRequest) Reset() {
@@ -117,6 +118,13 @@ func (x *AppRequest) GetAppVersion() string {
 func (x *AppRequest) GetAction() string {
 	if x != nil {
 		return x.Action
+	}
+	return ""
+}
+
+func (x *AppRequest) GetExpectedWorkloadUid() string {
+	if x != nil {
+		return x.ExpectedWorkloadUid
 	}
 	return ""
 }
@@ -217,7 +225,7 @@ var File_app_runtime_proto protoreflect.FileDescriptor
 
 const file_app_runtime_proto_rawDesc = "" +
 	"\n" +
-	"\x11app-runtime.proto\x12\x12station.runtime.v1\"\xff\x01\n" +
+	"\x11app-runtime.proto\x12\x12station.runtime.v1\"\xb3\x02\n" +
 	"\n" +
 	"AppRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x1d\n" +
@@ -230,7 +238,8 @@ const file_app_runtime_proto_rawDesc = "" +
 	"\x06app_id\x18\x06 \x01(\tR\x05appId\x12\x1f\n" +
 	"\vapp_version\x18\a \x01(\tR\n" +
 	"appVersion\x12\x16\n" +
-	"\x06action\x18\b \x01(\tR\x06action\"\x83\x02\n" +
+	"\x06action\x18\b \x01(\tR\x06action\x122\n" +
+	"\x15expected_workload_uid\x18\t \x01(\tR\x13expectedWorkloadUid\"\x83\x02\n" +
 	"\vAppProgress\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +

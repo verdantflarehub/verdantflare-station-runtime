@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,17 +19,22 @@ import (
 )
 
 type Target struct {
-	AppID, Version string
-	Deployment     *appsv1.Deployment
-	Services       []*corev1.Service
-	Models         []string
-	GPU            int
-	DiskBytes      int64
-	Hash           [32]byte
+	ExpectedUID      string
+	ActivityURL      string
+	ActivityTokenEnv string
+	AppID, Version   string
+	Deployment       *appsv1.Deployment
+	Services         []*corev1.Service
+	Models           []string
+	GPU              int
+	DiskBytes        int64
+	Hash             [32]byte
 }
 type registryEntry struct {
-	ManifestFile string `json:"manifest_file"`
-	Namespace    string `json:"namespace"`
+	ActivityURL      string `json:"activity_url,omitempty"`
+	ActivityTokenEnv string `json:"activity_token_env,omitempty"`
+	ManifestFile     string `json:"manifest_file"`
+	Namespace        string `json:"namespace"`
 }
 type manifest struct {
 	AppID   string `json:"app_id"`
@@ -125,7 +131,16 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 		if err != nil {
 			return nil, err
 		}
-		t := Target{AppID: m.AppID, Version: m.Version, Models: []string{}, GPU: m.Resources.GPU, DiskBytes: m.Resources.Disk}
+		if (e.ActivityURL == "") != (e.ActivityTokenEnv == "") {
+			return nil, errors.New("activity endpoint and credential reference must be paired")
+		}
+		if e.ActivityURL != "" {
+			u, err := url.Parse(e.ActivityURL)
+			if err != nil || u.Scheme != "http" || u.Hostname() != m.Deployment.Name+"."+e.Namespace+".svc.cluster.local" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "/api/dashboard" || !regexp.MustCompile(`^STATION_APP_[A-Z0-9_]+$`).MatchString(e.ActivityTokenEnv) {
+				return nil, errors.New("invalid registered activity endpoint")
+			}
+		}
+		t := Target{ActivityURL: e.ActivityURL, ActivityTokenEnv: e.ActivityTokenEnv, AppID: m.AppID, Version: m.Version, Models: []string{}, GPU: m.Resources.GPU, DiskBytes: m.Resources.Disk}
 		for _, model := range m.Models {
 			t.Models = append(t.Models, model.ID+"@"+model.Version)
 		}

@@ -76,12 +76,12 @@ func mark(meta *metav1.ObjectMeta, t Target, station, org string) {
 func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, station, org string) (Result, error) {
 	// No task/lease API exists yet: disruptive commands must fail closed.
 	if action == "stop" || action == "restart" || action == "delete" {
-		return failed("SERVICE_UNAVAILABLE", "Runtime task occupancy check is not implemented; disruptive operation was not executed"), nil
+		return activityGuard(ctx, t), nil
 	}
-	if t.DiskBytes > 0 {
+	if action != "adopt" && t.DiskBytes > 0 {
 		return failed("SERVICE_UNAVAILABLE", "Storage capacity preflight is not connected"), nil
 	}
-	if len(t.Models) > 0 || t.GPU > 0 {
+	if action != "adopt" && (len(t.Models) > 0 || t.GPU > 0) {
 		return failed("SERVICE_UNAVAILABLE", "Model preparation and GPU readiness adapters are not connected"), nil
 	}
 	deployments := k.Client.AppsV1().Deployments(t.Deployment.Namespace)
@@ -106,6 +106,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	}
 	if err != nil {
 		return Result{}, err
+	}
+	if action == "adopt" {
+		return k.adopt(ctx, t, live, station, org)
 	}
 	if !owned(live.Annotations, t, station, org) {
 		return failed("CONFLICT", "Existing workload is not owned by this registered installation; explicit adoption is required"), nil
