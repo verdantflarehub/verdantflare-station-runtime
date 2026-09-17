@@ -59,3 +59,16 @@ spec:
 		t.Fatal("unregistered init image accepted")
 	}
 }
+
+func TestVersionedComponentImageTags(t *testing.T) {
+	for _, image := range []string{"registry.invalid/app:1.0.0", "registry.invalid/app:v1.0.0", "registry.invalid/app:video-mcp-server-v0.9.2", "registry.invalid/app:video-mcp-server-v0.9.2@sha256:663d2db6f1ecc8c809b5476f157915626b8793f1e956602dd6ed76ff585c44e5"} {
+		if !imagePattern.MatchString(image) {
+			t.Errorf("valid release rejected: %s", image)
+		}
+	}
+	for _, image := range []string{"registry.invalid/app:latest", "registry.invalid/app:dev", "registry.invalid/app:video-mcp-server-v0.9.2-extra", "registry.invalid/app:video-mcp-server-v0.9.2@sha256:bad"} {
+		if imagePattern.MatchString(image) {
+			t.Errorf("mutable or malformed tag accepted: %s", image)
+		}
+	}
+}

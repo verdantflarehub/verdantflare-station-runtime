@@ -53,7 +53,7 @@ type manifest struct {
 
 var namePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
 var versionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`)
-var imagePattern = regexp.MustCompile(`^\S+:v?[0-9]+\.[0-9]+\.[0-9]+(@sha256:[a-f0-9]{64})?$`)
+var imagePattern = regexp.MustCompile(`^\S+:(?:[a-z0-9][a-z0-9._-]*-)?v?[0-9]+\.[0-9]+\.[0-9]+(@sha256:[a-f0-9]{64})?$`)
 
 func validName(s string) bool { return len(s) > 0 && len(s) <= 63 && namePattern.MatchString(s) }
 func fileInRoot(root, ref string) ([]byte, error) {
