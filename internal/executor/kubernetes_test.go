@@ -85,8 +85,9 @@ func TestUnavailableAdaptersHaveNoSideEffects(t *testing.T) {
 		t.Fatal("model dependency bypassed")
 	}
 }
-func TestExistingWorkloadIsNotAdoptedImplicitly(t *testing.T) {
+func TestForeignWorkloadIsNotTakenOver(t *testing.T) {
 	app := target()
+	app.Deployment.Annotations = map[string]string{ownerKey: "other-station"}
 	c := fake.NewSimpleClientset(app.Deployment)
 	d := Kubernetes{c}
 	r, e := d.Step(context.Background(), app, "install", "op", "station", "org")
@@ -96,6 +97,30 @@ func TestExistingWorkloadIsNotAdoptedImplicitly(t *testing.T) {
 	for _, a := range c.Actions() {
 		if a.GetVerb() != "get" {
 			t.Fatal("mutated existing workload")
+		}
+	}
+}
+
+func TestStartRegistersMatchingExistingApplication(t *testing.T) {
+	ctx := context.Background()
+	app := target()
+	live := app.Deployment.DeepCopy()
+	live.UID = "existing-uid"
+	live.Generation = 1
+	live.Status = appsv1.DeploymentStatus{ObservedGeneration: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
+	c := fake.NewSimpleClientset(live)
+	driver := Kubernetes{c}
+	r, e := driver.Step(ctx, app, "start", "op", "station", "org")
+	if e != nil || r.Status != "running" {
+		t.Fatal(r, e)
+	}
+	r, e = driver.Step(ctx, app, "start", "op", "station", "org")
+	if e != nil || r.Status != "succeeded" {
+		t.Fatal(r, e)
+	}
+	for _, a := range c.Actions() {
+		if a.GetVerb() != "get" && a.GetVerb() != "patch" {
+			t.Fatal("unexpected workload mutation", a)
 		}
 	}
 }

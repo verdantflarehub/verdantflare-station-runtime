@@ -35,7 +35,7 @@ Required repository or organization Actions secrets:
 - `REGISTRY_PASSWORD_ALIYUN`: registry password.
 
 The configured release image is
-`<registry>/wod/verdantflare-station:station-runtime-v0.2.0`.
+`<registry>/wod/verdantflare-station:station-runtime-v0.2.1`.
 Increment `IMAGE_VERSION` for subsequent releases. The preflight refuses existing
 tags and stops on registry/authentication errors; it does not publish moving SHA,
 branch or latest tags.

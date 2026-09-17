@@ -111,7 +111,14 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		return k.adopt(ctx, t, live, station, org)
 	}
 	if !owned(live.Annotations, t, station, org) {
-		return failed("CONFLICT", "Existing workload is not owned by this registered installation; explicit adoption is required"), nil
+		// Registration is an internal step of the requested lifecycle operation.
+		// Observe again before starting: never update a stale resourceVersion.
+		t.ExpectedUID = string(live.UID)
+		result, err := k.adopt(ctx, t, live, station, org)
+		if err != nil || result.Status != "succeeded" {
+			return result, err
+		}
+		return Result{"running", "checking", "", ""}, nil
 	}
 	if live.DeletionTimestamp != nil {
 		return failed("CONFLICT", "Workload is being deleted"), nil
