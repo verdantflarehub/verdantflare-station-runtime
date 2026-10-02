@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: verdantflare-station
+  labels:
+    app.kubernetes.io/name: etcd
+    app.kubernetes.io/part-of: verdantflare
+    app.kubernetes.io/component: service-registry
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: etcd
+  ports:
+    - name: client
+      port: 2379
+      targetPort: 2379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcd
+  namespace: verdantflare-station
+  labels:
+    app.kubernetes.io/name: etcd
+    app.kubernetes.io/part-of: verdantflare
+    app.kubernetes.io/component: service-registry
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: etcd
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: etcd
+        app.kubernetes.io/part-of: verdantflare
+        app.kubernetes.io/component: service-registry
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: verdentflare-5090
+      containers:
+        - name: etcd
+          image: registry.beagle.default:6444/k8s/etcd:v3.5.16
+          imagePullPolicy: IfNotPresent
+          command:
+            - etcd
+            - --name=etcd-station
+            - --data-dir=/var/run/etcd/default.etcd
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://etcd.verdantflare-station.svc.cluster.local:2379
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-advertise-peer-urls=http://127.0.0.1:2380
+            - --initial-cluster=etcd-station=http://127.0.0.1:2380
+            - --initial-cluster-state=new
+            - --auto-compaction-retention=1
+            - --quota-backend-bytes=4294967296
+          ports:
+            - name: client
+              containerPort: 2379
+            - name: peer
+              containerPort: 2380
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 2379
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 2379
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: etcd-data
+              mountPath: /var/run/etcd
+      volumes:
+        - name: etcd-data
+          emptyDir: {}

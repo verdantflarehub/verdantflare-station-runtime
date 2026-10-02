@@ -9,6 +9,8 @@ installs/
 ├── README.md
 ├── Workflow.md
 ├── helm/station-runtime/       # Runtime 可复用 Helm Chart
+├── yaml/
+│   └── etcd/                   # 单节点 etcd MCP 注册中心部署清单 (版本与 K8s 一致)
 └── scripts/
     ├── server-init-workflow.sh # 服务器初始化门禁脚本，默认只读
     ├── validate-chart.sh       # Helm lint + template

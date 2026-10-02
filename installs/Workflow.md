@@ -11,7 +11,7 @@ S0  capture node facts and a rollback snapshot
 S1  install/configure NVIDIA container runtime and restart containerd
 S2  install the single approved Kubernetes GPU device plugin
 S3  initialize /data layout, Local StorageClass and Retain PVs
-S4  create namespaces, quotas, service accounts and Secrets by controlled process
+S4  create namespaces, quotas, service accounts, Secrets, and base datastores/registry (PostgreSQL, etcd)
 S5  run gpu-probe Job and model-probe Job, save logs and UUID evidence
 S6  install Station Runtime chart and verify 5052/5053 readiness
 S7  reconcile one controlled workload through Runtime
