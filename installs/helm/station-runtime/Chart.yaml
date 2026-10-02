@@ -1,0 +1,6 @@
+apiVersion: v2
+name: station-runtime
+description: Station Runtime service and its least-privilege Kubernetes wiring
+type: application
+version: 0.1.0
+appVersion: station-runtime-v0.2.1

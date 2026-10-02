@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "station-runtime.fullname" . }}
+  labels:
+    {{- include "station-runtime.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "station-runtime.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "station-runtime.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "station-runtime.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: station-runtime
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.service.grpcPort }}
+            - name: probe
+              containerPort: {{ .Values.service.probePort }}
+          env:
+            - name: STATION_ID
+              value: {{ .Values.station.id | quote }}
+            - name: STATION_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.station.databaseSecret.name }}
+                  key: {{ .Values.station.databaseSecret.key }}
+            - name: STATION_TEMPLATE_ROOT
+              value: {{ .Values.station.templateRoot | quote }}
+            - name: STATION_RUNTIME_REGISTRY
+              value: {{ .Values.station.registryPath | quote }}
+            - name: STATION_KUBE_CONTEXT
+              value: {{ .Values.station.kubeContext | quote }}
+            - name: STATION_RUNTIME_ADDR
+              value: "0.0.0.0:{{ .Values.service.grpcPort }}"
+            - name: STATION_RUNTIME_PROBE_ADDR
+              value: "0.0.0.0:{{ .Values.service.probePort }}"
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: probe
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: probe
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: templates
+              mountPath: {{ .Values.station.templateRoot }}
+              readOnly: true
+            - name: registry
+              mountPath: /etc/station-runtime/registry
+              readOnly: true
+      volumes:
+        - name: templates
+          configMap:
+            name: {{ .Values.templatesConfigMap }}
+        - name: registry
+          configMap:
+            name: {{ .Values.registryConfigMap }}

@@ -1,0 +1,30 @@
+replicaCount: 1
+
+image:
+  repository: registry.example.invalid/wod/verdantflare-station
+  tag: station-runtime-v0.2.1
+  pullPolicy: IfNotPresent
+
+station:
+  id: "00000000-0000-0000-0000-000000000000"
+  databaseSecret:
+    name: station-runtime-database
+    key: url
+  templateRoot: /etc/station-runtime/templates
+  registryPath: /etc/station-runtime/registry/registry.json
+  kubeContext: ""
+
+templatesConfigMap: station-runtime-templates
+registryConfigMap: station-runtime-registry
+
+managedNamespaces:
+  - verdantflare-video
+
+service:
+  grpcPort: 5052
+  probePort: 5053
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

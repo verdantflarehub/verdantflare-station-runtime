@@ -1,0 +1,33 @@
+{{- range $namespace := .Values.managedNamespaces }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "station-runtime.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "station-runtime.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "station-runtime.fullname" $ }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "station-runtime.labels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "station-runtime.fullname" $ }}
+    namespace: {{ $.Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "station-runtime.fullname" $ }}
+---
+{{- end }}

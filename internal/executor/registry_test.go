@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -49,7 +51,11 @@ spec:
 		t.Fatal(e)
 	}
 	if e = os.Symlink(outside, filepath.Join(root, "escape")); e != nil {
-		t.Fatal(e)
+		if errors.Is(e, os.ErrPermission) || strings.Contains(strings.ToLower(e.Error()), "privilege is not held") {
+			t.Skip("skipping symlink test on Windows without privilege")
+		} else {
+			t.Fatal(e)
+		}
 	}
 	if _, e = fileInRoot(root, "escape"); e == nil {
 		t.Fatal("symlink escape accepted")

@@ -44,3 +44,33 @@ Integrate and verify on `dev`, then fast-forward to `release` and push to trigge
 Actions. The workflow does not migrate the database or deploy to Kubernetes.
 Registry secret visibility and branch protections must be configured in GitHub.
 Central deployment manifests remain in the design repository.
+
+## Deployment assets and promotion path
+
+Reusable deployment assets are developed and tested in this repository under
+the single `installs/` directory:
+
+- `installs/helm/station-runtime/` is the portable Runtime chart. It owns the
+  Runtime Deployment, Service, ServiceAccount, least-privilege RoleBindings, health
+  probes, and read-only ConfigMap mounts. It does not install PostgreSQL, GPU
+  plugins, StorageClass/PV, or application workloads.
+- `installs/scripts/validate-chart.sh` runs `helm lint` and a template render.
+- `installs/scripts/render-dev.sh` renders a reviewable manifest bundle; it never
+  applies to a cluster.
+- `installs/Workflow.md` and `installs/scripts/server-init-workflow.sh` define the server initialization
+  sequence from node facts through GPU/model probes and Runtime readiness. This is
+  an operator workflow, not a GitHub workflow.
+
+The promotion path is deliberately two-step:
+
+1. Develop the chart, scripts, probe contracts, and server initialization workflow
+   under `installs/`; validate the rendered output and Runtime behavior against the dev cluster
+   using an explicit context and a reviewable image version.
+2. After dev evidence is accepted, copy only the environment-specific values,
+   ConfigMaps, probe Jobs, and pinned image/chart references into
+   `verdantflare-design/deploys/k8s.dev.verdantflarehub.com/`. The design repository
+   remains the deployment fact source; this repository remains the reusable package
+   and release source.
+
+Do not commit registry credentials, Station database URLs, model weights, audio/video
+assets, or rendered secrets to either repository.
