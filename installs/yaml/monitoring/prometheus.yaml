@@ -1,0 +1,157 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: verdantflare-station
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: verdantflare-prometheus
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: verdantflare-prometheus
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: verdantflare-prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: verdantflare-station
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: verdantflare-station
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: verdantflare
+    app.kubernetes.io/component: monitoring-tsdb
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 5s
+      evaluation_interval: 5s
+      scrape_timeout: 4s
+
+    scrape_configs:
+      - job_name: 'dcgm-gpu'
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['dcgm-exporter.verdantflare-station.svc.cluster.local:9400']
+            labels:
+              group: 'gpu-hardware'
+
+      - job_name: 'node-host'
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['node-exporter.verdantflare-station.svc.cluster.local:9100']
+            labels:
+              group: 'host-system'
+
+      - job_name: 'prometheus'
+        metrics_path: /metrics
+        static_configs:
+          - targets: ['127.0.0.1:9090']
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: verdantflare-station
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: verdantflare
+    app.kubernetes.io/component: monitoring-tsdb
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: 9090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: verdantflare-station
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/part-of: verdantflare
+    app.kubernetes.io/component: monitoring-tsdb
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/part-of: verdantflare
+        app.kubernetes.io/component: monitoring-tsdb
+    spec:
+      serviceAccountName: prometheus
+      containers:
+        - name: prometheus
+          image: registry.cn-qingdao.aliyuncs.com/wod/prometheus:v2.23.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=7d
+            - --web.enable-lifecycle
+            - --web.console.libraries=/usr/share/prometheus/console_libraries
+            - --web.console.templates=/usr/share/prometheus/consoles
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            limits:
+              cpu: 1000m
+              memory: 1024Mi
+            requests:
+              cpu: 200m
+              memory: 256Mi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: prometheus-config
+        - name: data
+          emptyDir: {}

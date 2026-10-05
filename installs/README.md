@@ -10,7 +10,11 @@ installs/
 ├── Workflow.md
 ├── helm/station-runtime/       # Runtime 可复用 Helm Chart
 ├── yaml/
-│   └── etcd/                   # 单节点 etcd MCP 注册中心部署清单 (版本与 K8s 一致)
+│   ├── etcd/                   # 单节点 etcd MCP 注册中心部署清单 (版本与 K8s 一致)
+│   └── monitoring/             # ★ 硬件监控底座 (Prometheus TSDB, DCGM-Exporter, Node-Exporter)
+│       ├── dcgm-exporter.yaml  # GPU 显存/温度/功耗采集 DaemonSet
+│       ├── node-exporter.yaml  # 主机 CPU/内存/磁盘采集 DaemonSet
+│       └── prometheus.yaml     # 单 Pod Prometheus 开箱即用清单
 └── scripts/
     ├── server-init-workflow.sh # 服务器初始化门禁脚本，默认只读
     ├── validate-chart.sh       # Helm lint + template
