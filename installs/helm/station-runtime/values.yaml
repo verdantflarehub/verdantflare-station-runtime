@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: registry.example.invalid/wod/verdantflare-station
-  tag: station-runtime-v0.2.2
+  tag: station-runtime-v0.2.3
   pullPolicy: IfNotPresent
 
 station:

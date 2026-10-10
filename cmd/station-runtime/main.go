@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
 	"google.golang.org/grpc"
 )
 
@@ -50,12 +51,25 @@ func run() int {
 		return 1
 	}
 	defer pool.Close()
+	var profiles map[string]instances.HelperProfile
+	if path := os.Getenv("STATION_INSTANCE_REGISTRY"); path != "" {
+		profiles, err = instances.LoadProfiles(path)
+		if err != nil || len(os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")) < 32 {
+			logger.Error("invalid_instance_configuration")
+			return 1
+		}
+	}
 	ready := func(c context.Context) error {
 		var id string
 		var table bool
 		e := pool.QueryRow(c, `SELECT station_id::text,to_regclass('station.runtime_app_executions') IS NOT NULL FROM station.configuration WHERE singleton`).Scan(&id, &table)
 		if e != nil || id != station || !table {
 			return errors.New("database not ready")
+		}
+		if profiles != nil {
+			if e = pool.QueryRow(c, `SELECT to_regclass('station.runtime_instance_executions') IS NOT NULL AND to_regclass('station.runtime_instance_workspaces') IS NOT NULL`).Scan(&table); e != nil || !table {
+				return errors.New("instance migrations not ready")
+			}
 		}
 		return nil
 	}
@@ -93,7 +107,17 @@ func run() int {
 		w.WriteHeader(200)
 	})
 	probe := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second}
-	done := make(chan error, 2)
+	done := make(chan error, 3)
+	var instanceServer *http.Server
+	if profiles != nil {
+		instanceAddr := os.Getenv("STATION_INSTANCE_ADDR")
+		if instanceAddr == "" {
+			instanceAddr = "127.0.0.1:5054"
+		}
+		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}}
+		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+		go func() { done <- instanceServer.ListenAndServe() }()
+	}
 	go func() { done <- server.Serve(lis) }()
 	go func() { done <- probe.ListenAndServe() }()
 	logger.Info("runtime_started", "station_id", station, "registered_apps", len(targets))
@@ -108,6 +132,9 @@ func run() int {
 	shutdown, finish := context.WithTimeout(context.Background(), 5*time.Second)
 	defer finish()
 	_ = probe.Shutdown(shutdown)
+	if instanceServer != nil {
+		_ = instanceServer.Shutdown(shutdown)
+	}
 	return result
 }
 func main() { os.Exit(run()) }
