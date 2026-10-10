@@ -30,6 +30,16 @@ Runtime image tag, chart version, model manifest, and the controlled Secret name
 Credentials, model weights, and rendered Secret data are inputs to the execution
 environment only; they are never committed to this repository.
 
+## Optional local media relay
+
+For approved desktop media deployments, provision the independent host Docker
+Coturn profile from [docker/coturn/](docker/coturn/README.md) after S0 network facts
+are known. Validate the stable LAN address, Pod/LAN source ranges, reserved relay
+ports, existing firewall and controlled REST secret. Start the dedicated firewall
+before the container, then verify LAN-to-worker relay and browser ICE. This does
+not require restarting Docker, containerd, Cilium or GPU workloads. It does not
+prove the desktop video/input quality gate or Internet reachability.
+
 ## Evidence per step
 
 Each step writes a timestamped record containing the target context, Node UID,

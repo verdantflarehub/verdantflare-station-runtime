@@ -1,0 +1,37 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: coturn-internal
+  namespace: verdantflare-station
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: coturn
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: verdantflare-blender
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: blender-worker
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coturn-verifier
+      ports:
+        - {protocol: UDP, port: 3478}
+        - {protocol: TCP, port: 3478}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coturn
+      ports:
+        - {protocol: UDP, port: 49160, endPort: 49259}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coturn
+      ports:
+        - {protocol: UDP, port: 49160, endPort: 49259}

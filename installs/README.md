@@ -9,8 +9,10 @@ installs/
 ├── README.md
 ├── Workflow.md
 ├── helm/station-runtime/       # Runtime 可复用 Helm Chart
+├── docker/coturn/              # 已批准的客户 LAN Coturn：Docker host 网络 + systemd + 独立防火墙
 ├── yaml/
 │   ├── etcd/                   # 单节点 etcd MCP 注册中心部署清单 (版本与 K8s 一致)
+│   ├── coturn/                 # 保留的集群内协议验证 profile，不是客户 LAN 安装入口
 │   └── monitoring/             # ★ 硬件监控底座 (Prometheus TSDB, DCGM-Exporter, Node-Exporter)
 │       ├── dcgm-exporter.yaml  # GPU 显存/温度/功耗采集 DaemonSet
 │       ├── node-exporter.yaml  # 主机 CPU/内存/磁盘采集 DaemonSet
@@ -33,3 +35,5 @@ Runtime 仓库负责研发和版本化安装能力：Chart、初始化流程、�
 4. 只对中央目录执行声明式 apply，并保留回滚点和证据回执。
 
 Chart 只部署 Runtime 自身，不安装 PostgreSQL、NVIDIA Device Plugin、StorageClass/PV 或业务推理服务；这些由 Workflow 和 dev 环境清单按阶段管理。
+
+Coturn 当前采用 [docker/coturn/](docker/coturn/README.md) 的宿主机安装资产：Docker host 网络、systemd 生命周期和专用 nftables 规则。与 Runtime 进程分开运行；不随 Runtime Chart 自动开放网络。中央部署目录维护环境地址、批准范围和实测结果。`yaml/coturn/` 仅保留为集群内协议验证 profile。

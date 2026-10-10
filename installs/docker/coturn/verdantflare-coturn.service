@@ -1,0 +1,21 @@
+[Unit]
+Description=VerdantFlare host TURN relay
+Requires=docker.service verdantflare-coturn-firewall.service
+After=docker.service network-online.target verdantflare-coturn-firewall.service
+Wants=network-online.target
+PartOf=verdantflare-coturn-firewall.service
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/etc/verdantflare/coturn/coturn.env
+ExecStart=/opt/verdantflare/coturn/run.sh
+ExecStop=/usr/local/bin/docker stop --time 20 verdantflare-coturn
+Restart=always
+RestartSec=5
+TimeoutStopSec=35
+
+[Install]
+WantedBy=multi-user.target

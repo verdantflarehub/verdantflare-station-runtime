@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: coturn
+  namespace: verdantflare-station
+  labels:
+    app.kubernetes.io/name: coturn
+    app.kubernetes.io/part-of: verdantflare
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: coturn
+  ports:
+    - {name: turn-udp, port: 3478, targetPort: turn-udp, protocol: UDP}
+    - {name: turn-tcp, port: 3478, targetPort: turn-tcp, protocol: TCP}

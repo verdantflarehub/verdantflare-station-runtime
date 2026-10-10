@@ -1,0 +1,17 @@
+[Unit]
+Description=VerdantFlare TURN-only host firewall
+After=network-online.target
+Wants=network-online.target
+Before=verdantflare-coturn.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=/etc/verdantflare/coturn/coturn.env
+ExecStart=/opt/verdantflare/coturn/firewall.sh start
+ExecReload=/opt/verdantflare/coturn/firewall.sh start
+ExecStop=/opt/verdantflare/coturn/firewall.sh stop
+
+[Install]
+WantedBy=multi-user.target

@@ -54,6 +54,9 @@ the single `installs/` directory:
   Runtime Deployment, Service, ServiceAccount, least-privilege RoleBindings, health
   probes, and read-only ConfigMap mounts. It does not install PostgreSQL, GPU
   plugins, StorageClass/PV, or application workloads.
+- `installs/docker/coturn/` provides the independent host-network Docker media relay,
+  systemd units and scoped host firewall. Environment values and verification
+  records remain in the central design repository.
 - `installs/scripts/validate-chart.sh` runs `helm lint` and a template render.
 - `installs/scripts/render-dev.sh` renders a reviewable manifest bundle; it never
   applies to a cluster.
