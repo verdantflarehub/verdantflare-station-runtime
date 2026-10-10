@@ -77,6 +77,7 @@ func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string
 	preempt := corev1.PreemptNever
 	pod.Spec.TerminationGracePeriodSeconds = &grace
 	pod.Spec.Priority = &priority
+	pod.Spec.PriorityClassName = "blender-nonpreempting"
 	pod.Spec.PreemptionPolicy = &preempt
 	pod.Spec.SchedulerName = "default-scheduler"
 	runtimeSize, shmSize := resource.MustParse("256Mi"), resource.MustParse("2Gi")
@@ -124,7 +125,7 @@ func workerPodMatches(actual, desired *corev1.Pod, uid string) bool {
 		len(actual.Spec.InitContainers) != 0 || len(actual.Spec.EphemeralContainers) != 0 || len(actual.Spec.Containers) != 1 ||
 		len(actual.Spec.Volumes) != len(desired.Spec.Volumes) || actual.Spec.RuntimeClassName != nil || actual.Spec.Affinity != nil || actual.Spec.Resources != nil ||
 		len(actual.Spec.ResourceClaims) != 0 || len(actual.Spec.SchedulingGates) != 0 || len(actual.Spec.TopologySpreadConstraints) != 0 ||
-		actual.Spec.PriorityClassName != "" || actual.Spec.ServiceAccountName != "default" && actual.Spec.ServiceAccountName != "" {
+		actual.Spec.PriorityClassName != desired.Spec.PriorityClassName || actual.Spec.ServiceAccountName != "default" && actual.Spec.ServiceAccountName != "" {
 		return false
 	}
 	for _, tol := range actual.Spec.Tolerations {

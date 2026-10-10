@@ -127,7 +127,7 @@ func TestWorkerCreationReplayAndPodReadinessAreDistinctFromRunning(t *testing.T)
 		t.Fatal(obs, err)
 	}
 	pod, _ := client.CoreV1().Pods(p.Namespace).Get(ctx, obs.PodName, metav1.GetOptions{})
-	if pod.Spec.NodeName != "" || pod.Spec.PreemptionPolicy == nil || *pod.Spec.PreemptionPolicy != corev1.PreemptNever || pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
+	if pod.Spec.NodeName != "" || pod.Spec.PriorityClassName != "blender-nonpreempting" || pod.Spec.PreemptionPolicy == nil || *pod.Spec.PreemptionPolicy != corev1.PreemptNever || pod.Spec.RestartPolicy != corev1.RestartPolicyNever {
 		t.Fatal("worker bypassed scheduler or enabled preemption/restart")
 	}
 	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken || pod.Spec.Containers[0].Env[0].Value != in.InstanceID {
