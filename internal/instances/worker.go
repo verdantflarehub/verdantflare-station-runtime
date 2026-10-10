@@ -118,6 +118,8 @@ func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string
 }
 
 func workerPodMatches(actual, desired *corev1.Pod, uid string) bool {
+	actual = withProbeDefaults(actual)
+	desired = withProbeDefaults(desired)
 	if !ownedHelper(actual, desired, uid) || actual.Spec.HostNetwork || actual.Spec.HostPID || actual.Spec.HostIPC ||
 		len(actual.Spec.InitContainers) != 0 || len(actual.Spec.EphemeralContainers) != 0 || len(actual.Spec.Containers) != 1 ||
 		len(actual.Spec.Volumes) != len(desired.Spec.Volumes) || actual.Spec.RuntimeClassName != nil || actual.Spec.Affinity != nil || actual.Spec.Resources != nil ||

@@ -95,6 +95,8 @@ func ownedHelper(actual, desired metav1.Object, uid string) bool {
 }
 
 func helperPodMatches(actual, desired *corev1.Pod, uid string) bool {
+	actual = withProbeDefaults(actual)
+	desired = withProbeDefaults(desired)
 	return ownedHelper(actual, desired, uid) && !actual.Spec.HostNetwork && !actual.Spec.HostPID && !actual.Spec.HostIPC &&
 		len(actual.Spec.InitContainers) == 0 && len(actual.Spec.EphemeralContainers) == 0 && len(actual.Spec.Containers) == 1 && actual.Spec.RuntimeClassName == nil &&
 		len(actual.Spec.Volumes) == 2 && len(actual.Spec.Containers[0].EnvFrom) == 0 &&
@@ -103,6 +105,34 @@ func helperPodMatches(actual, desired *corev1.Pod, uid string) bool {
 		len(actual.Spec.Containers[0].Args) == 0 && actual.Spec.Containers[0].Lifecycle == nil && actual.Spec.Containers[0].SecurityContext != nil &&
 		(actual.Spec.Containers[0].SecurityContext.Capabilities == nil || len(actual.Spec.Containers[0].SecurityContext.Capabilities.Add) == 0) &&
 		equality.Semantic.DeepDerivative(desired.Spec, actual.Spec)
+}
+
+// The API server supplies these numeric probe defaults. Compare against the
+// canonical values without changing the persisted template hash or accepting
+// arbitrary changes to the observed probe.
+func withProbeDefaults(pod *corev1.Pod) *corev1.Pod {
+	out := pod.DeepCopy()
+	for i := range out.Spec.Containers {
+		c := &out.Spec.Containers[i]
+		for _, p := range []*corev1.Probe{c.StartupProbe, c.ReadinessProbe, c.LivenessProbe} {
+			if p == nil {
+				continue
+			}
+			if p.TimeoutSeconds == 0 {
+				p.TimeoutSeconds = 1
+			}
+			if p.PeriodSeconds == 0 {
+				p.PeriodSeconds = 10
+			}
+			if p.SuccessThreshold == 0 {
+				p.SuccessThreshold = 1
+			}
+			if p.FailureThreshold == 0 {
+				p.FailureThreshold = 3
+			}
+		}
+	}
+	return out
 }
 
 func helperServiceMatches(actual, desired *corev1.Service, uid string) bool {
