@@ -2,7 +2,6 @@ package executor
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"slices"
 	"time"
@@ -11,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 )
 
 type Service struct {
@@ -23,6 +22,7 @@ type Service struct {
 	Targets   map[string]Target
 	Driver    Driver
 	Timeout   time.Duration
+	Releases  *releasebinding.Source
 }
 
 func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProgress, error) {
@@ -44,10 +44,8 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	} else if in.ExpectedWorkloadUid != "" {
 		return nil, status.Error(codes.InvalidArgument, "Unexpected workload UID")
 	}
-	normalized := proto.Clone(in).(*pb.AppRequest)
-	normalized.RequestId = ""
-	raw, _ := proto.MarshalOptions{Deterministic: true}.Marshal(normalized)
-	hash := sha256.Sum256(raw)
+	target, targetExists := s.Targets[in.AppId+"@"+in.AppVersion]
+	hash := operationHash(in, len(target.InstallationBindings) > 0)
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "Runtime database unavailable")
@@ -62,7 +60,10 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	var created time.Time
 	err = tx.QueryRow(ctx, `SELECT request_hash,target_hash,status,phase,error_code,error_message,created_at FROM station.runtime_app_executions WHERE operation_id=$1`, in.OperationId).Scan(&savedHash, &targetHash, &out.Status, &out.Phase, &out.ErrorCode, &out.ErrorMessage, &created)
 	if err == nil {
-		if string(savedHash) != string(hash[:]) {
+		// A removed registration must still allow an exact terminal replay. Both
+		// known wire formats are checked against the saved digest, never rewritten.
+		boundHash := operationHash(in, true)
+		if string(savedHash) != string(hash[:]) && (targetExists || string(savedHash) != string(boundHash[:])) {
 			return nil, status.Error(codes.AlreadyExists, "Operation ID payload conflict")
 		}
 		if out.Status != "running" {
@@ -71,12 +72,19 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.Unavailable, "Runtime state unavailable")
 	}
-	target, ok := s.Targets[in.AppId+"@"+in.AppVersion]
-	if !ok {
+	if !targetExists {
 		if err == nil {
 			return s.finish(ctx, tx, in.OperationId, failed("CONFLICT", "Registered template missing during recovery"))
 		}
 		return nil, status.Error(codes.FailedPrecondition, "Application version has no registered execution template")
+	}
+	if s.verifyPreinstalled(in, target) != nil {
+		return nil, status.Error(codes.PermissionDenied, "Preinstalled release binding is not trusted")
+	}
+	target.Preinstalled = in.PreinstalledRelease != nil
+	boundTarget, bindingErr := bindInstallation(target, in)
+	if bindingErr != nil {
+		return nil, status.Error(codes.FailedPrecondition, "Registered application requires a valid installation binding")
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		var busy bool
@@ -106,8 +114,8 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	if time.Since(created) > timeout {
 		return s.finish(ctx, tx, in.OperationId, failed("SERVICE_UNAVAILABLE", "Runtime operation timed out; inspect workload before retrying"))
 	}
-	target.ExpectedUID = in.ExpectedWorkloadUid
-	result, err := s.Driver.Step(ctx, target, in.Action, in.OperationId, in.StationId, in.OrganizationId)
+	boundTarget.ExpectedUID = in.ExpectedWorkloadUid
+	result, err := s.Driver.Step(ctx, boundTarget, in.Action, in.OperationId, in.StationId, in.OrganizationId)
 	if err != nil {
 		// Kubernetes/network uncertainty is retryable; preserve the operation and start time.
 		return nil, status.Error(codes.Unavailable, "Kubernetes observation unavailable; retry original operation")

@@ -20,6 +20,7 @@ const ownerKey = "station.verdantflare.com/station-id"
 const orgKey = "station.verdantflare.com/organization-id"
 const appKey = "station.verdantflare.com/app-id"
 const hashKey = "station.verdantflare.com/template-hash"
+const preinstalledOperationKey = "station.verdantflare.com/preinstalled-creation-operation"
 
 type Result struct{ Status, Phase, Code, Message string }
 
@@ -55,7 +56,11 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	return &Kubernetes{c}, nil
 }
 func annotations(t Target, station, org string) map[string]string {
-	return map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}
+	values := map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}
+	if t.InstallationID != "" {
+		values[installationKey] = t.InstallationID
+	}
+	return values
 }
 func owned(a map[string]string, t Target, station, org string) bool {
 	for k, v := range annotations(t, station, org) {
@@ -95,6 +100,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		}
 		d := t.Deployment.DeepCopy()
 		mark(&d.ObjectMeta, t, station, org)
+		if t.Preinstalled {
+			d.Annotations[preinstalledOperationKey] = operation
+		}
 		_, err = deployments.Create(ctx, d, metav1.CreateOptions{})
 		if apierrors.IsAlreadyExists(err) {
 			return Result{"running", "installing", "", ""}, nil
@@ -109,6 +117,16 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	}
 	if action == "adopt" {
 		return k.adopt(ctx, t, live, station, org)
+	}
+	if t.InstallationID != "" && (!owned(live.Annotations, t, station, org) ||
+		!preinstalledDeploymentCompatible(t.Deployment, live)) {
+		return failed("CONFLICT", "Workload differs from the bound installation"), nil
+	}
+	if t.Preinstalled && (action != "install" || live.Annotations[preinstalledOperationKey] != operation || !owned(live.Annotations, t, station, org)) {
+		return failed("CONFLICT", "Preinstalled install cannot adopt an existing workload"), nil
+	}
+	if t.Preinstalled && !preinstalledDeploymentCompatible(t.Deployment, live) {
+		return failed("CONFLICT", "Preinstalled workload differs from the signed template"), nil
 	}
 	if !owned(live.Annotations, t, station, org) {
 		// Registration is an internal step of the requested lifecycle operation.
@@ -137,12 +155,24 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		if apierrors.IsNotFound(e) {
 			svc := wanted.DeepCopy()
 			mark(&svc.ObjectMeta, t, station, org)
-			_, e = services.Create(ctx, svc, metav1.CreateOptions{})
+			if t.Preinstalled {
+				svc.Annotations[preinstalledOperationKey] = operation
+			}
+			existing, e = services.Create(ctx, svc, metav1.CreateOptions{})
 			if apierrors.IsAlreadyExists(e) {
 				return Result{"running", "installing", "", ""}, nil
 			}
 		} else if e == nil && !owned(existing.Annotations, t, station, org) {
 			return failed("CONFLICT", "Existing Service is not owned by this installation"), nil
+		}
+		if e == nil && existing != nil && t.Preinstalled && existing.Annotations[preinstalledOperationKey] != operation {
+			return failed("CONFLICT", "Preinstalled install cannot reuse an existing Service"), nil
+		}
+		if e == nil && existing != nil && t.Preinstalled && !preinstalledServiceCompatible(wanted, existing) {
+			return failed("CONFLICT", "Preinstalled Service differs from the signed template"), nil
+		}
+		if e == nil && existing != nil && t.InstallationID != "" && !preinstalledServiceCompatible(wanted, existing) {
+			return failed("CONFLICT", "Service differs from the bound installation"), nil
 		}
 		if e != nil {
 			return Result{}, e

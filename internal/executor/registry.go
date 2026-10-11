@@ -19,22 +19,27 @@ import (
 )
 
 type Target struct {
-	ExpectedUID      string
-	ActivityURL      string
-	ActivityTokenEnv string
-	AppID, Version   string
-	Deployment       *appsv1.Deployment
-	Services         []*corev1.Service
-	Models           []string
-	GPU              int
-	DiskBytes        int64
-	Hash             [32]byte
+	InstallationBindings []InstallationBinding
+	InstallationID       string
+	ManifestRef          string
+	Preinstalled         bool
+	ExpectedUID          string
+	ActivityURL          string
+	ActivityTokenEnv     string
+	AppID, Version       string
+	Deployment           *appsv1.Deployment
+	Services             []*corev1.Service
+	Models               []string
+	GPU                  int
+	DiskBytes            int64
+	Hash                 [32]byte
 }
 type registryEntry struct {
-	ActivityURL      string `json:"activity_url,omitempty"`
-	ActivityTokenEnv string `json:"activity_token_env,omitempty"`
-	ManifestFile     string `json:"manifest_file"`
-	Namespace        string `json:"namespace"`
+	InstallationBindings []InstallationBinding `json:"installation_bindings,omitempty"`
+	ActivityURL          string                `json:"activity_url,omitempty"`
+	ActivityTokenEnv     string                `json:"activity_token_env,omitempty"`
+	ManifestFile         string                `json:"manifest_file"`
+	Namespace            string                `json:"namespace"`
 }
 type manifest struct {
 	AppID   string `json:"app_id"`
@@ -63,26 +68,15 @@ var imagePattern = regexp.MustCompile(`^\S+:(?:[a-z0-9][a-z0-9._-]*-)?v?[0-9]+\.
 
 func validName(s string) bool { return len(s) > 0 && len(s) <= 63 && namePattern.MatchString(s) }
 func fileInRoot(root, ref string) ([]byte, error) {
-	if filepath.IsAbs(ref) || ref == "" {
+	if !filepath.IsLocal(ref) {
 		return nil, errors.New("template reference must be relative")
 	}
-	root, err := filepath.EvalSymlinks(root)
+	boundary, err := os.OpenRoot(root)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("registered root unavailable")
 	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return nil, err
-	}
-	path, err := filepath.EvalSymlinks(filepath.Join(root, ref))
-	if err != nil {
-		return nil, err
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || len(rel) > 3 && rel[:3] == "../" {
-		return nil, errors.New("template outside registered root")
-	}
-	f, err := os.Open(path)
+	defer boundary.Close()
+	f, err := boundary.Open(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +104,7 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 		return nil, errors.New("invalid registry")
 	}
 	targets := map[string]Target{}
-	workloads := map[string]bool{}
+	workloads := map[string]string{}
 	for _, e := range entries {
 		if !validName(e.Namespace) || e.Namespace == "default" {
 			return nil, errors.New("invalid namespace")
@@ -140,7 +134,7 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 				return nil, errors.New("invalid registered activity endpoint")
 			}
 		}
-		t := Target{ActivityURL: e.ActivityURL, ActivityTokenEnv: e.ActivityTokenEnv, AppID: m.AppID, Version: m.Version, Models: []string{}, GPU: m.Resources.GPU, DiskBytes: m.Resources.Disk}
+		t := Target{ManifestRef: e.ManifestFile, ActivityURL: e.ActivityURL, ActivityTokenEnv: e.ActivityTokenEnv, AppID: m.AppID, Version: m.Version, Models: []string{}, GPU: m.Resources.GPU, DiskBytes: m.Resources.Disk}
 		for _, model := range m.Models {
 			t.Models = append(t.Models, model.ID+"@"+model.Version)
 		}
@@ -188,6 +182,10 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 		if t.Deployment == nil {
 			return nil, errors.New("registered deployment not found")
 		}
+		t.InstallationBindings = e.InstallationBindings
+		if !validInstallationBindings(t) {
+			return nil, errors.New("invalid installation bindings")
+		}
 		if t.Deployment.Spec.Replicas == nil || *t.Deployment.Spec.Replicas == 0 {
 			one := int32(1)
 			t.Deployment.Spec.Replicas = &one
@@ -230,15 +228,16 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 		}
 		key := m.AppID + "@" + m.Version
 		workload := e.Namespace + "/" + m.Deployment.Name
-		if _, ok := targets[key]; ok || workloads[workload] {
+		if _, ok := targets[key]; ok || (workloads[workload] != "" && workloads[workload] != m.AppID) {
 			return nil, fmt.Errorf("duplicate registered target")
 		}
-		workloads[workload] = true
+		workloads[workload] = m.AppID
 		hashInput, _ := json.Marshal(struct {
-			Manifest   manifest
-			Deployment *appsv1.Deployment
-			Services   []*corev1.Service
-		}{m, t.Deployment, t.Services})
+			Manifest             manifest
+			Deployment           *appsv1.Deployment
+			Services             []*corev1.Service
+			InstallationBindings []InstallationBinding `json:",omitempty"`
+		}{m, t.Deployment, t.Services, t.InstallationBindings})
 		t.Hash = sha256.Sum256(hashInput)
 		targets[key] = t
 	}

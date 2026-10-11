@@ -32,8 +32,14 @@ type AppRequest struct {
 	AppVersion          string                 `protobuf:"bytes,7,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
 	Action              string                 `protobuf:"bytes,8,opt,name=action,proto3" json:"action,omitempty"`
 	ExpectedWorkloadUid string                 `protobuf:"bytes,9,opt,name=expected_workload_uid,json=expectedWorkloadUid,proto3" json:"expected_workload_uid,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// Present only for the opt-in, digest-bound preinstalled command surface.
+	// Its absence retains the historical v1 behavior and replay digest.
+	PreinstalledRelease *PreinstalledRelease `protobuf:"bytes,10,opt,name=preinstalled_release,json=preinstalledRelease,proto3" json:"preinstalled_release,omitempty"`
+	// Core-owned persisted installation identity; never supplied by AppCommand.
+	// Opt-in registry bindings consume it; legacy targets exclude it from replay hashes.
+	InstallationId string `protobuf:"bytes,11,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *AppRequest) Reset() {
@@ -129,6 +135,88 @@ func (x *AppRequest) GetExpectedWorkloadUid() string {
 	return ""
 }
 
+func (x *AppRequest) GetPreinstalledRelease() *PreinstalledRelease {
+	if x != nil {
+		return x.PreinstalledRelease
+	}
+	return nil
+}
+
+func (x *AppRequest) GetInstallationId() string {
+	if x != nil {
+		return x.InstallationId
+	}
+	return ""
+}
+
+type PreinstalledRelease struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	ReleaseRef     string                 `protobuf:"bytes,1,opt,name=release_ref,json=releaseRef,proto3" json:"release_ref,omitempty"`
+	PackageDigest  string                 `protobuf:"bytes,2,opt,name=package_digest,json=packageDigest,proto3" json:"package_digest,omitempty"`
+	ChartDigest    string                 `protobuf:"bytes,3,opt,name=chart_digest,json=chartDigest,proto3" json:"chart_digest,omitempty"`
+	TemplateDigest string                 `protobuf:"bytes,4,opt,name=template_digest,json=templateDigest,proto3" json:"template_digest,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *PreinstalledRelease) Reset() {
+	*x = PreinstalledRelease{}
+	mi := &file_app_runtime_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PreinstalledRelease) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PreinstalledRelease) ProtoMessage() {}
+
+func (x *PreinstalledRelease) ProtoReflect() protoreflect.Message {
+	mi := &file_app_runtime_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PreinstalledRelease.ProtoReflect.Descriptor instead.
+func (*PreinstalledRelease) Descriptor() ([]byte, []int) {
+	return file_app_runtime_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *PreinstalledRelease) GetReleaseRef() string {
+	if x != nil {
+		return x.ReleaseRef
+	}
+	return ""
+}
+
+func (x *PreinstalledRelease) GetPackageDigest() string {
+	if x != nil {
+		return x.PackageDigest
+	}
+	return ""
+}
+
+func (x *PreinstalledRelease) GetChartDigest() string {
+	if x != nil {
+		return x.ChartDigest
+	}
+	return ""
+}
+
+func (x *PreinstalledRelease) GetTemplateDigest() string {
+	if x != nil {
+		return x.TemplateDigest
+	}
+	return ""
+}
+
 type AppProgress struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	OperationId     string                 `protobuf:"bytes,1,opt,name=operation_id,json=operationId,proto3" json:"operation_id,omitempty"`
@@ -144,7 +232,7 @@ type AppProgress struct {
 
 func (x *AppProgress) Reset() {
 	*x = AppProgress{}
-	mi := &file_app_runtime_proto_msgTypes[1]
+	mi := &file_app_runtime_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -156,7 +244,7 @@ func (x *AppProgress) String() string {
 func (*AppProgress) ProtoMessage() {}
 
 func (x *AppProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_app_runtime_proto_msgTypes[1]
+	mi := &file_app_runtime_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -169,7 +257,7 @@ func (x *AppProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppProgress.ProtoReflect.Descriptor instead.
 func (*AppProgress) Descriptor() ([]byte, []int) {
-	return file_app_runtime_proto_rawDescGZIP(), []int{1}
+	return file_app_runtime_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *AppProgress) GetOperationId() string {
@@ -225,7 +313,7 @@ var File_app_runtime_proto protoreflect.FileDescriptor
 
 const file_app_runtime_proto_rawDesc = "" +
 	"\n" +
-	"\x11app-runtime.proto\x12\x12station.runtime.v1\"\xb3\x02\n" +
+	"\x11app-runtime.proto\x12\x12station.runtime.v1\"\xb8\x03\n" +
 	"\n" +
 	"AppRequest\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x1d\n" +
@@ -239,7 +327,16 @@ const file_app_runtime_proto_rawDesc = "" +
 	"\vapp_version\x18\a \x01(\tR\n" +
 	"appVersion\x12\x16\n" +
 	"\x06action\x18\b \x01(\tR\x06action\x122\n" +
-	"\x15expected_workload_uid\x18\t \x01(\tR\x13expectedWorkloadUid\"\x83\x02\n" +
+	"\x15expected_workload_uid\x18\t \x01(\tR\x13expectedWorkloadUid\x12Z\n" +
+	"\x14preinstalled_release\x18\n" +
+	" \x01(\v2'.station.runtime.v1.PreinstalledReleaseR\x13preinstalledRelease\x12'\n" +
+	"\x0finstallation_id\x18\v \x01(\tR\x0einstallationId\"\xa9\x01\n" +
+	"\x13PreinstalledRelease\x12\x1f\n" +
+	"\vrelease_ref\x18\x01 \x01(\tR\n" +
+	"releaseRef\x12%\n" +
+	"\x0epackage_digest\x18\x02 \x01(\tR\rpackageDigest\x12!\n" +
+	"\fchart_digest\x18\x03 \x01(\tR\vchartDigest\x12'\n" +
+	"\x0ftemplate_digest\x18\x04 \x01(\tR\x0etemplateDigest\"\x83\x02\n" +
 	"\vAppProgress\x12!\n" +
 	"\foperation_id\x18\x01 \x01(\tR\voperationId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x14\n" +
@@ -267,19 +364,21 @@ func file_app_runtime_proto_rawDescGZIP() []byte {
 	return file_app_runtime_proto_rawDescData
 }
 
-var file_app_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_app_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_app_runtime_proto_goTypes = []any{
-	(*AppRequest)(nil),  // 0: station.runtime.v1.AppRequest
-	(*AppProgress)(nil), // 1: station.runtime.v1.AppProgress
+	(*AppRequest)(nil),          // 0: station.runtime.v1.AppRequest
+	(*PreinstalledRelease)(nil), // 1: station.runtime.v1.PreinstalledRelease
+	(*AppProgress)(nil),         // 2: station.runtime.v1.AppProgress
 }
 var file_app_runtime_proto_depIdxs = []int32{
-	0, // 0: station.runtime.v1.AppRuntime.Reconcile:input_type -> station.runtime.v1.AppRequest
-	1, // 1: station.runtime.v1.AppRuntime.Reconcile:output_type -> station.runtime.v1.AppProgress
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	1, // 0: station.runtime.v1.AppRequest.preinstalled_release:type_name -> station.runtime.v1.PreinstalledRelease
+	0, // 1: station.runtime.v1.AppRuntime.Reconcile:input_type -> station.runtime.v1.AppRequest
+	2, // 2: station.runtime.v1.AppRuntime.Reconcile:output_type -> station.runtime.v1.AppProgress
+	2, // [2:3] is the sub-list for method output_type
+	1, // [1:2] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_app_runtime_proto_init() }
@@ -287,14 +386,14 @@ func file_app_runtime_proto_init() {
 	if File_app_runtime_proto != nil {
 		return
 	}
-	file_app_runtime_proto_msgTypes[1].OneofWrappers = []any{}
+	file_app_runtime_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_runtime_proto_rawDesc), len(file_app_runtime_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

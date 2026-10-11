@@ -71,7 +71,11 @@ func (k *Kubernetes) adopt(ctx context.Context, t Target, live *appsv1.Deploymen
 	if t.ExpectedUID == "" || string(live.UID) != t.ExpectedUID || !adoptable(live.ObjectMeta, t, station, org) {
 		return failed("CONFLICT", "Workload identity or ownership changed; refresh before adoption"), nil
 	}
-	if !compatible(t.Deployment.Spec, live.Spec, true) || !sameExecution(t.Deployment, live) {
+	deploymentMatches := compatible(t.Deployment.Spec, live.Spec, true) && sameExecution(t.Deployment, live)
+	if t.Preinstalled || t.InstallationID != "" {
+		deploymentMatches = preinstalledDeploymentCompatible(t.Deployment, live)
+	}
+	if !deploymentMatches {
 		return failed("CONFLICT", "Workload differs from the registered template"), nil
 	}
 	existing := make([]*corev1.Service, 0, len(t.Services))
@@ -82,7 +86,11 @@ func (k *Kubernetes) adopt(ctx context.Context, t Target, live *appsv1.Deploymen
 		if err != nil {
 			return failed("CONFLICT", "Registered Service unavailable for adoption"), nil
 		}
-		if !adoptable(svc.ObjectMeta, t, station, org) || !compatible(wanted.Spec, svc.Spec, false) {
+		serviceMatches := compatible(wanted.Spec, svc.Spec, false)
+		if t.Preinstalled || t.InstallationID != "" {
+			serviceMatches = preinstalledServiceCompatible(wanted, svc)
+		}
+		if !adoptable(svc.ObjectMeta, t, station, org) || !serviceMatches {
 			return failed("CONFLICT", "Service differs from the registered template or ownership"), nil
 		}
 		existing = append(existing, svc)

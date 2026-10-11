@@ -66,7 +66,7 @@ func (s *WorkspaceStore) reserve(ctx context.Context, tx pgx.Tx, in Identity, p 
 	}
 	for _, claim := range p.Claims {
 		var used bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.runtime_instance_workspaces WHERE station_id=$1 AND namespace=$2 AND pvc_name=$3)`, in.StationID, p.Namespace, claim).Scan(&used); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.runtime_instance_workspaces WHERE station_id=$1 AND namespace=$2 AND pvc_name=$3 UNION ALL SELECT 1 FROM station.app_instance_workspaces WHERE station_id=$1 AND namespace=$2 AND pvc_name=$3)`, in.StationID, p.Namespace, claim).Scan(&used); err != nil {
 			return VolumeBinding{}, err
 		}
 		if used {
@@ -79,7 +79,7 @@ func (s *WorkspaceStore) reserve(ctx context.Context, tx pgx.Tx, in Identity, p 
 		if e != nil {
 			return VolumeBinding{}, e
 		}
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.runtime_instance_workspaces WHERE pvc_uid=$1 OR pv_uid=$2)`, b.PVCUID, b.PVUID).Scan(&used); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.runtime_instance_workspaces WHERE pvc_uid=$1 OR pv_uid=$2 UNION ALL SELECT 1 FROM station.app_instance_workspaces WHERE pvc_uid=$1 OR pv_uid=$2)`, b.PVCUID, b.PVUID).Scan(&used); err != nil {
 			return VolumeBinding{}, err
 		}
 		if used {

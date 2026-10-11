@@ -1,12 +1,57 @@
 package executor
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRegistryRetainsTwoVersionsWithoutSharingAcrossApps(t *testing.T) {
+	root := t.TempDir()
+	write := func(name string, value any) {
+		t.Helper()
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(root, name), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeVersion := func(appID, version, name string) registryEntry {
+		t.Helper()
+		app := target()
+		app.Deployment.APIVersion = "apps/v1"
+		app.Deployment.Kind = "Deployment"
+		app.Deployment.Spec.Template.Spec.Containers[0].Image = "example.invalid/server:" + version
+		write(name+".workload.json", app.Deployment)
+		write(name+".manifest.json", map[string]any{"app_id": appID, "version": version, "required_models": []any{}, "required_resources": map[string]any{"gpu": 0, "disk_bytes": 0},
+			"deployment": map[string]any{"template_ref": name + ".workload.json", "workload_name": "test-app", "images": []any{map[string]string{"component": "server", "image": "example.invalid/server:" + version}}}})
+		return registryEntry{ManifestFile: name + ".manifest.json", Namespace: "test-runtime"}
+	}
+	source := writeVersion("test-app", "1.0.0", "source")
+	target := writeVersion("test-app", "1.1.0", "target")
+	write("registry.json", []registryEntry{source, target})
+	loaded, err := LoadRegistry(root, filepath.Join(root, "registry.json"))
+	if err != nil || len(loaded) != 2 {
+		t.Fatal("source and target could not coexist", err)
+	}
+	if loaded["test-app@1.0.0"].Hash == loaded["test-app@1.1.0"].Hash {
+		t.Fatal("version templates not independently bound")
+	}
+	foreign := writeVersion("another-app", "1.2.0", "foreign")
+	write("registry.json", []registryEntry{source, foreign})
+	if _, err = LoadRegistry(root, filepath.Join(root, "registry.json")); err == nil {
+		t.Fatal("another app shared an existing workload")
+	}
+	write("registry.json", []registryEntry{source, source})
+	if _, err = LoadRegistry(root, filepath.Join(root, "registry.json")); err == nil {
+		t.Fatal("duplicate release registration accepted")
+	}
+}
 
 func TestRegistryRejectsEscapeAndImageMismatch(t *testing.T) {
 	root := t.TempDir()

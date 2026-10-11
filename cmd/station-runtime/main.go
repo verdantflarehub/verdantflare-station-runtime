@@ -14,8 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/appinstances"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
 	"google.golang.org/grpc"
 )
 
@@ -59,6 +61,51 @@ func run() int {
 			return 1
 		}
 	}
+	var appProfiles map[string]appinstances.Profile
+	var appCallers appinstances.AccessRegistry
+	appProfilePath, appAccessPath := os.Getenv("STATION_APP_INSTANCE_PROFILES"), os.Getenv("STATION_APP_INSTANCE_ACCESS_REGISTRY")
+	if appProfilePath != "" || appAccessPath != "" || os.Getenv("STATION_APP_INSTANCE_CORE_ORIGIN") != "" || os.Getenv("STATION_APP_INSTANCE_ADDR") != "" {
+		load := func() error {
+			f, e := os.Open(appProfilePath)
+			if e != nil {
+				return e
+			}
+			defer f.Close()
+			appProfiles, e = appinstances.LoadProfiles(f)
+			if e != nil {
+				return e
+			}
+			a, e := os.Open(appAccessPath)
+			if e != nil {
+				return e
+			}
+			defer a.Close()
+			appCallers, e = appinstances.LoadAccessRegistry(a, os.Getenv, os.Getenv("STATION_APP_INSTANCE_CORE_ORIGIN"))
+			if e != nil {
+				return e
+			}
+			apps := map[string]bool{}
+			for _, caller := range appCallers {
+				apps[caller.AppID] = false
+			}
+			for _, p := range appProfiles {
+				if _, ok := apps[p.AppID]; !ok {
+					return errors.New("profile has no registered App caller")
+				}
+				apps[p.AppID] = true
+			}
+			for _, exists := range apps {
+				if !exists {
+					return errors.New("App caller has no registered profile")
+				}
+			}
+			return nil
+		}
+		if err = load(); err != nil {
+			logger.Error("invalid_app_instance_configuration")
+			return 1
+		}
+	}
 	ready := func(c context.Context) error {
 		var id string
 		var table bool
@@ -67,8 +114,13 @@ func run() int {
 			return errors.New("database not ready")
 		}
 		if profiles != nil {
-			if e = pool.QueryRow(c, `SELECT to_regclass('station.runtime_instance_executions') IS NOT NULL AND to_regclass('station.runtime_instance_workspaces') IS NOT NULL`).Scan(&table); e != nil || !table {
+			if e = pool.QueryRow(c, `SELECT to_regclass('station.runtime_instance_executions') IS NOT NULL AND to_regclass('station.runtime_instance_workspaces') IS NOT NULL AND to_regclass('station.app_instance_workspaces') IS NOT NULL`).Scan(&table); e != nil || !table {
 				return errors.New("instance migrations not ready")
+			}
+		}
+		if appProfiles != nil {
+			if e = pool.QueryRow(c, `SELECT to_regclass('station.app_instance_workspaces') IS NOT NULL AND to_regclass('station.app_instance_starts') IS NOT NULL AND to_regclass('station.app_instance_stops') IS NOT NULL AND to_regclass('station.app_installations') IS NOT NULL AND to_regclass('station.runtime_instance_workspaces') IS NOT NULL`).Scan(&table); e != nil || !table {
+				return errors.New("App instance migrations not ready")
 			}
 		}
 		return nil
@@ -90,7 +142,7 @@ func run() int {
 		return 1
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16384))
-	pb.RegisterAppRuntimeServer(server, &executor.Service{Pool: pool, StationID: station, Targets: targets, Driver: driver})
+	pb.RegisterAppRuntimeServer(server, &executor.Service{Pool: pool, StationID: station, Targets: targets, Driver: driver, Releases: &releasebinding.Source{Path: os.Getenv("STATION_PREINSTALLED_RELEASE_REGISTRY")}})
 	probeAddr := os.Getenv("STATION_RUNTIME_PROBE_ADDR")
 	if probeAddr == "" {
 		probeAddr = "127.0.0.1:5053"
@@ -107,7 +159,32 @@ func run() int {
 		w.WriteHeader(200)
 	})
 	probe := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second}
-	done := make(chan error, 3)
+	done := make(chan error, 4)
+	var appInstanceServer *http.Server
+	if appProfiles != nil {
+		appAddr := os.Getenv("STATION_APP_INSTANCE_ADDR")
+		if appAddr == "" {
+			appAddr = "127.0.0.1:5055"
+		}
+		observer := appinstances.HTTPWorkerObserver{Client: appinstances.InternalHTTPClient()}
+		handler := appinstances.Handler{StationID: station, Profiles: appProfiles, Callers: appCallers,
+			Execute: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile) (appinstances.StartRecord, error) {
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, Observer: observer}
+				return journal.Start(ctx, in, p)
+			},
+			Access: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile) (appinstances.WorkerAccess, error) {
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, Observer: observer}
+				return journal.Access(ctx, in, p)
+			},
+			Stop: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile, operation, boot string) (appinstances.StopRecord, error) {
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check,
+					Stopper: appinstances.HTTPWorkerStopper{Client: appinstances.InternalHTTPClient()}}
+				return journal.Stop(ctx, in, p, operation, boot)
+			}}
+		appInstanceServer = &http.Server{Addr: appAddr, Handler: handler, ReadHeaderTimeout: 3 * time.Second,
+			ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+		go func() { done <- appInstanceServer.ListenAndServe() }()
+	}
 	var instanceServer *http.Server
 	if profiles != nil {
 		instanceAddr := os.Getenv("STATION_INSTANCE_ADDR")
@@ -134,6 +211,9 @@ func run() int {
 	_ = probe.Shutdown(shutdown)
 	if instanceServer != nil {
 		_ = instanceServer.Shutdown(shutdown)
+	}
+	if appInstanceServer != nil {
+		_ = appInstanceServer.Shutdown(shutdown)
 	}
 	return result
 }
