@@ -49,6 +49,7 @@ type startState struct {
 	SecretUID string            `json:"secret_uid"`
 	Worker    WorkerObservation `json:"worker"`
 	Proof     *RunningProof     `json:"proof,omitempty"`
+	Recovery  *workerRecovery   `json:"recovery,omitempty"`
 }
 
 type StartProgress struct {
@@ -119,8 +120,8 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	state := startState{SecretUID: prepared.SecretUID}
 	if newOperation {
 		var action, status, phase string
-		var lastState []byte
-		err = tx.QueryRow(ctx, `SELECT action,status,phase,state FROM station.runtime_instance_executions WHERE instance_id=$1 AND action<>'create' ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID).Scan(&action, &status, &phase, &lastState)
+		var lastState, lastInput []byte
+		err = tx.QueryRow(ctx, `SELECT action,status,phase,state,input FROM station.runtime_instance_executions WHERE instance_id=$1 AND action<>'create' ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID).Scan(&action, &status, &phase, &lastState, &lastInput)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if in.source() != (WorkerSource{created.SourceRevisionID, created.SourceSHA256, created.SourceSize, created.EmptySource}) {
 				return out, ErrBinding
@@ -133,11 +134,18 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 			var stopped struct {
 				Source *WorkerSource `json:"source"`
 			}
-			if action != "stop" || status != "succeeded" || phase != "stopped" {
-				return out, ErrConflict
-			}
-			if json.Unmarshal(lastState, &stopped) != nil || stopped.Source == nil || *stopped.Source != in.source() {
-				return out, ErrBinding
+			if action == "start" && status == "succeeded" && phase == "running" {
+				state.Recovery, err = prepareWorkerRecovery(ctx, s.Client, in, p, binding, lastInput, lastState)
+				if err != nil {
+					return out, err
+				}
+			} else {
+				if action != "stop" || status != "succeeded" || phase != "stopped" {
+					return out, ErrConflict
+				}
+				if json.Unmarshal(lastState, &stopped) != nil || stopped.Source == nil || *stopped.Source != in.source() {
+					return out, ErrBinding
+				}
 			}
 		}
 		stateRaw, _ = json.Marshal(state)
@@ -168,6 +176,26 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	}
 	if !locked {
 		return out, ErrBusy
+	}
+	if state.Recovery != nil {
+		if err = verifyFailedWorker(ctx, s.Client, p, *state.Recovery, true); err != nil {
+			return out, err
+		}
+		gone, e := removeWorker(ctx, s.Client, state.Recovery.Start, p, binding, state.Recovery.Worker)
+		if e != nil {
+			return out, e
+		}
+		if gone {
+			state.Recovery = nil
+			stateRaw, _ = json.Marshal(state)
+			_, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET state=$2,updated_at=now() WHERE operation_id=$1`, in.OperationID, stateRaw)
+			if err != nil {
+				return out, err
+			}
+		}
+		// Commit cleanup before creation so a lost response cannot confuse the
+		// replacement Pod with an unrelated workspace user on recovery replay.
+		return out, tx.Commit(ctx)
 	}
 	state.Worker, err = EnsureWorker(ctx, s.Client, in.identity(), p, binding, in.OperationID, state.SecretUID, in.source(), state.Worker)
 	if err != nil {
