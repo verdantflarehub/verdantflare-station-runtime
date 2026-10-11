@@ -47,6 +47,11 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 		return nil, err
 	}
 	cfg.Timeout = 3 * time.Second
+	// A live instance grant performs resource reads both before and after its
+	// worker handshake. Keep a finite shared budget that can admit two such
+	// checks within the Dashboard observation window; do not cache authority.
+	cfg.QPS = 30
+	cfg.Burst = 60
 	cfg.ContentType = "application/json"
 	cfg.AcceptContentTypes = "application/json"
 	c, err := kubernetes.NewForConfig(cfg)
