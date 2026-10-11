@@ -72,6 +72,16 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, status.Error(codes.Unavailable, "Runtime state unavailable")
 	}
+	// Do not accept a new execution while a conversion is active: an accepted
+	// ordinary execution would otherwise block the converter's own recovery.
+	// Exact terminal replay above is read-only and remains available.
+	var transitioning bool
+	if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.app_installation_transitions WHERE station_id=$1 AND app_id=$2 AND status NOT IN ('succeeded','failed'))`, s.StationID, in.AppId).Scan(&transitioning); e != nil {
+		return nil, status.Error(codes.Unavailable, "Installation transition state unavailable")
+	}
+	if transitioning {
+		return nil, status.Error(codes.Aborted, "Application has an active installation transition")
+	}
 	if !targetExists {
 		if err == nil {
 			return s.finish(ctx, tx, in.OperationId, failed("CONFLICT", "Registered template missing during recovery"))
