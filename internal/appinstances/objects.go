@@ -19,6 +19,7 @@ const prefix = "station.verdantflare.com/"
 const stationKey = prefix + "station-id"
 const poolKey = prefix + "workspace-pool"
 const specKey = prefix + "appinstance-spec-hash"
+const workerPriorityClass = "station-app-worker"
 
 type Identity struct {
 	StationID      string `json:"station_id"`
@@ -142,7 +143,7 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 	c.LivenessProbe = probe(15, 3)
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: runName(in), Namespace: p.Namespace, Labels: labels, Annotations: in.annotations(p)}, Spec: corev1.PodSpec{
 		Containers: []corev1.Container{c}, AutomountServiceAccountToken: &no, EnableServiceLinks: &no, RestartPolicy: corev1.RestartPolicyNever,
-		TerminationGracePeriodSeconds: &grace, Priority: &zero, PreemptionPolicy: &preempt, SchedulerName: "default-scheduler",
+		TerminationGracePeriodSeconds: &grace, Priority: &zero, PreemptionPolicy: &preempt, PriorityClassName: workerPriorityClass, SchedulerName: "default-scheduler",
 		NodeSelector: map[string]string{corev1.LabelHostname: p.NodeName},
 		SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: &yes, RunAsUser: &p.RunAsUser, RunAsGroup: &p.RunAsUser, FSGroup: &p.RunAsUser,
 			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
@@ -151,10 +152,15 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 	}}
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: p.Namespace, Labels: labels, Annotations: in.annotations(p)}, Spec: corev1.ServiceSpec{
 		Type: corev1.ServiceTypeClusterIP, Selector: labels, Ports: []corev1.ServicePort{{Name: "control", Port: p.Port, TargetPort: intstr.FromString("control"), Protocol: corev1.ProtocolTCP}}}}
+	// The fixed PriorityClass makes the existing priority=0/Never semantics
+	// admissible. Preserve v1 hashes (including Services of accepted starts).
+	// podMatches still checks the full class, priority and preemption policy.
+	semanticPod := *pod.Spec.DeepCopy()
+	semanticPod.PriorityClassName = ""
 	raw, _ := json.Marshal(struct {
 		Pod     corev1.PodSpec
 		Service corev1.ServiceSpec
-	}{pod.Spec, svc.Spec})
+	}{semanticPod, svc.Spec})
 	sum := sha256.Sum256(raw)
 	pod.Annotations[specKey] = hex.EncodeToString(sum[:])
 	svc.Annotations[specKey] = pod.Annotations[specKey]

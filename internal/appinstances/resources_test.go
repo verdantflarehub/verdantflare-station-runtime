@@ -2,6 +2,8 @@ package appinstances
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -76,6 +78,50 @@ func assertNoEffects(t *testing.T, c *fake.Clientset) {
 	for _, a := range c.Actions() {
 		if a.GetVerb() != "get" && a.GetVerb() != "list" {
 			t.Fatalf("unexpected mutation: %s %s", a.GetVerb(), a.GetResource().Resource)
+		}
+	}
+}
+
+func TestWorkerPriorityAdmissionPreservesAcceptedService(t *testing.T) {
+	in, p, pvc, pv := fixture()
+	c := client(pvc, pv)
+	b := bind(t, c, in, p, pvc.Name)
+	pod, service, err := WorkerObjects(in, p, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pod.Spec.PriorityClassName != "station-app-worker" || pod.Spec.Priority == nil || *pod.Spec.Priority != 0 || pod.Spec.PreemptionPolicy == nil || *pod.Spec.PreemptionPolicy != corev1.PreemptNever {
+		t.Fatal("worker must name the non-preempting zero-priority admission class")
+	}
+	// Reconstruct the previously published v1 digest to exercise a Service
+	// persisted before Priority admission rejected its corresponding Pod.
+	legacy := pod.Spec.DeepCopy()
+	legacy.PriorityClassName = ""
+	raw, err := json.Marshal(struct {
+		Pod     corev1.PodSpec
+		Service corev1.ServiceSpec
+	}{*legacy, service.Spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(raw)
+	service.UID = types.UID(uuid.NewString())
+	service.Annotations[specKey] = hex.EncodeToString(digest[:])
+	_, desiredService, _ := WorkerObjects(in, p, b)
+	if !serviceMatches(service, desiredService, string(service.UID)) {
+		t.Fatal("accepted v1 Service became unrecoverable")
+	}
+	for _, change := range []func(*corev1.Pod){
+		func(p *corev1.Pod) { p.Spec.PriorityClassName = "" },
+		func(p *corev1.Pod) { p.Spec.PriorityClassName = "foreign-class" },
+		func(p *corev1.Pod) { v := int32(1); p.Spec.Priority = &v },
+		func(p *corev1.Pod) { v := corev1.PreemptLowerPriority; p.Spec.PreemptionPolicy = &v },
+	} {
+		actual := pod.DeepCopy()
+		actual.UID = types.UID(uuid.NewString())
+		change(actual)
+		if podMatches(actual, pod, "", p.NodeName) {
+			t.Fatal("scheduling drift was accepted")
 		}
 	}
 }
