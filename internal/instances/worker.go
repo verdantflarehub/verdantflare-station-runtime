@@ -201,13 +201,13 @@ func EnsureWorker(ctx context.Context, client kubernetes.Interface, in Identity,
 			return expected, err
 		}
 	} else {
-		// Recheck exclusivity before accepting an already-created worker's load
-		// proof; a device-plugin sharing change must not become a valid binding.
+		// Recheck allocation mode before accepting load proof. The immutable
+		// Pod owns an access request; sharing must not be read as exclusivity.
 		node, e := client.CoreV1().Nodes().Get(ctx, p.NodeName, metav1.GetOptions{})
 		if e != nil {
 			return expected, e
 		}
-		if !exclusiveGPU(node) {
+		if !supportedGPU(node) {
 			return expected, ErrComputeUnknown
 		}
 	}

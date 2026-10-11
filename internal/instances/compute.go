@@ -3,6 +3,7 @@ package instances
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -113,9 +114,9 @@ func AdmitWorker(ctx context.Context, client kubernetes.Interface, nodeName stri
 			return ErrComputeCapacity
 		}
 	}
-	// Fail closed on absent device-plugin exclusivity evidence; a GPU request
-	// count alone does not prove a physical device is exclusively allocated.
-	if !exclusiveGPU(node) {
+	// Counts are access slots on time-sliced nodes, not physical GPUs.
+	// Require verified mode evidence; never infer mode from the count.
+	if !supportedGPU(node) {
 		return ErrComputeUnknown
 	}
 	pods, err := client.CoreV1().Pods("").List(ctx, metav1.ListOptions{})
@@ -161,4 +162,16 @@ func exclusiveGPU(node *corev1.Node) bool {
 	return node.Labels["nvidia.com/gpu.sharing-strategy"] == "none" &&
 		(node.Labels["nvidia.com/gpu.replicas"] == "" || node.Labels["nvidia.com/gpu.replicas"] == "1") &&
 		!strings.HasSuffix(node.Labels["nvidia.com/gpu.product"], "-SHARED")
+}
+
+// Compatibility time-slicing retains nvidia.com/gpu and existing immutable
+// worker/profile hashes. This checks access slots, not VRAM or peak budgets.
+func supportedGPU(node *corev1.Node) bool {
+	if exclusiveGPU(node) {
+		return true
+	}
+	replicas, err := strconv.Atoi(node.Labels["nvidia.com/gpu.replicas"])
+	renamed := node.Status.Allocatable["nvidia.com/gpu.shared"]
+	return node.Labels["nvidia.com/gpu.sharing-strategy"] == "time-slicing" &&
+		err == nil && replicas >= 2 && renamed.IsZero()
 }
