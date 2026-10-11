@@ -23,6 +23,7 @@ type Target struct {
 	InstallationID       string
 	ManifestRef          string
 	Preinstalled         bool
+	AppCenter            bool
 	ExpectedUID          string
 	ActivityURL          string
 	ActivityTokenEnv     string

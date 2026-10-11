@@ -17,6 +17,7 @@ import (
 
 type Service struct {
 	pb.UnimplementedAppRuntimeServer
+	pb.UnimplementedAppCenterRuntimeServer
 	Pool      *pgxpool.Pool
 	StationID string
 	Targets   map[string]Target
@@ -26,6 +27,13 @@ type Service struct {
 }
 
 func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProgress, error) {
+	return s.reconcile(ctx, in, nil)
+}
+
+func (s *Service) reconcile(ctx context.Context, in *pb.AppRequest, guard *pb.AppCenterGuard) (*pb.AppProgress, error) {
+	if in == nil {
+		return nil, status.Error(codes.InvalidArgument, "Command required")
+	}
 	for _, v := range []string{in.OperationId, in.UserId, in.OrganizationId, in.StationId} {
 		if _, e := uuid.Parse(v); e != nil {
 			return nil, status.Error(codes.InvalidArgument, "Invalid identity or operation ID")
@@ -46,6 +54,9 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	}
 	target, targetExists := s.Targets[in.AppId+"@"+in.AppVersion]
 	hash := operationHash(in, len(target.InstallationBindings) > 0)
+	if guard != nil {
+		hash = appCenterOperationHash(&pb.AppCenterRequest{Command: in, Guard: guard})
+	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return nil, status.Error(codes.Unavailable, "Runtime database unavailable")
@@ -63,7 +74,7 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 		// A removed registration must still allow an exact terminal replay. Both
 		// known wire formats are checked against the saved digest, never rewritten.
 		boundHash := operationHash(in, true)
-		if string(savedHash) != string(hash[:]) && (targetExists || string(savedHash) != string(boundHash[:])) {
+		if string(savedHash) != string(hash[:]) && (guard != nil || targetExists || string(savedHash) != string(boundHash[:])) {
 			return nil, status.Error(codes.AlreadyExists, "Operation ID payload conflict")
 		}
 		if out.Status != "running" {
@@ -96,6 +107,25 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	if bindingErr != nil {
 		return nil, status.Error(codes.FailedPrecondition, "Registered application requires a valid installation binding")
 	}
+	if guard != nil {
+		boundTarget, bindingErr = bindAppCenterTarget(boundTarget, in, guard)
+		if bindingErr != nil {
+			if err == nil {
+				return s.finish(ctx, tx, in.OperationId, failed("CONFLICT", "Protected execution template changed"))
+			}
+			return nil, bindingErr
+		}
+		checker, ok := s.Driver.(AppCenterDriver)
+		if !ok {
+			return nil, status.Error(codes.FailedPrecondition, "Protected execution driver unavailable")
+		}
+		if e := checker.CheckAppCenter(ctx, boundTarget, in.Action, in.OperationId, in.StationId, in.OrganizationId, errors.Is(err, pgx.ErrNoRows)); e != nil {
+			if err == nil && status.Code(e) == codes.FailedPrecondition {
+				return s.finish(ctx, tx, in.OperationId, failed("CONFLICT", "Protected workload identity or ownership changed"))
+			}
+			return nil, e
+		}
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		var busy bool
 		if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.runtime_app_executions WHERE station_id=$1 AND app_id=$2 AND status='running')`, s.StationID, in.AppId).Scan(&busy); e != nil {
@@ -124,7 +154,9 @@ func (s *Service) Reconcile(ctx context.Context, in *pb.AppRequest) (*pb.AppProg
 	if time.Since(created) > timeout {
 		return s.finish(ctx, tx, in.OperationId, failed("SERVICE_UNAVAILABLE", "Runtime operation timed out; inspect workload before retrying"))
 	}
-	boundTarget.ExpectedUID = in.ExpectedWorkloadUid
+	if guard == nil {
+		boundTarget.ExpectedUID = in.ExpectedWorkloadUid
+	}
 	result, err := s.Driver.Step(ctx, boundTarget, in.Action, in.OperationId, in.StationId, in.OrganizationId)
 	if err != nil {
 		// Kubernetes/network uncertainty is retryable; preserve the operation and start time.

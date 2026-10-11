@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -84,6 +86,14 @@ func mark(meta *metav1.ObjectMeta, t Target, station, org string) {
 	}
 }
 func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, station, org string) (Result, error) {
+	if t.AppCenter {
+		if err := k.CheckAppCenter(ctx, t, action, operation, station, org, false); err != nil {
+			if status.Code(err) == codes.Unavailable {
+				return Result{}, err
+			}
+			return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
+		}
+	}
 	// No task/lease API exists yet: disruptive commands must fail closed.
 	if action == "stop" || action == "restart" || action == "delete" {
 		return activityGuard(ctx, t), nil
@@ -108,6 +118,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		if t.Preinstalled {
 			d.Annotations[preinstalledOperationKey] = operation
 		}
+		if t.AppCenter {
+			d.Annotations[appCenterOperationKey] = operation
+		}
 		_, err = deployments.Create(ctx, d, metav1.CreateOptions{})
 		if apierrors.IsAlreadyExists(err) {
 			return Result{"running", "installing", "", ""}, nil
@@ -122,6 +135,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	}
 	if action == "adopt" {
 		return k.adopt(ctx, t, live, station, org)
+	}
+	if t.AppCenter && !appCenterWorkloadMatches(t, live, action, operation, station, org) {
+		return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
 	}
 	if t.InstallationID != "" && (!owned(live.Annotations, t, station, org) ||
 		!preinstalledDeploymentCompatible(t.Deployment, live)) {
@@ -158,10 +174,26 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		services := k.Client.CoreV1().Services(wanted.Namespace)
 		existing, e := services.Get(ctx, wanted.Name, metav1.GetOptions{})
 		if apierrors.IsNotFound(e) {
+			if t.AppCenter {
+				// Recheck the parent immediately before each separate resource write.
+				current, checkErr := deployments.Get(ctx, t.Deployment.Name, metav1.GetOptions{})
+				if apierrors.IsNotFound(checkErr) {
+					return failed("CONFLICT", "Protected workload disappeared"), nil
+				}
+				if checkErr != nil {
+					return Result{}, checkErr
+				}
+				if !appCenterWorkloadMatches(t, current, action, operation, station, org) {
+					return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
+				}
+			}
 			svc := wanted.DeepCopy()
 			mark(&svc.ObjectMeta, t, station, org)
 			if t.Preinstalled {
 				svc.Annotations[preinstalledOperationKey] = operation
+			}
+			if t.AppCenter {
+				svc.Annotations[appCenterOperationKey] = operation
 			}
 			existing, e = services.Create(ctx, svc, metav1.CreateOptions{})
 			if apierrors.IsAlreadyExists(e) {
@@ -169,6 +201,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			}
 		} else if e == nil && !owned(existing.Annotations, t, station, org) {
 			return failed("CONFLICT", "Existing Service is not owned by this installation"), nil
+		}
+		if e == nil && existing != nil && t.AppCenter && !appCenterServiceMatches(t, wanted, existing, action, operation, station, org) {
+			return failed("CONFLICT", "Service differs from the protected installation"), nil
 		}
 		if e == nil && existing != nil && t.Preinstalled && existing.Annotations[preinstalledOperationKey] != operation {
 			return failed("CONFLICT", "Preinstalled install cannot reuse an existing Service"), nil
