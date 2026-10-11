@@ -35,4 +35,7 @@ func TestAppCenterRuntimeRPCRequiresSupport(t *testing.T) {
 	if _, err := pb.NewAppCenterRuntimeClient(conn).ReconcileBound(ctx, in); status.Code(err) != codes.Unimplemented {
 		t.Fatal("legacy server did not reject protected RPC", err)
 	}
+	if _, err := pb.NewAppCenterRuntimeClient(conn).InspectBound(ctx, &pb.AppCenterInspection{SchemaVersion: 1}); status.Code(err) != codes.Unimplemented {
+		t.Fatal("legacy server advertised protected inspection", err)
+	}
 }

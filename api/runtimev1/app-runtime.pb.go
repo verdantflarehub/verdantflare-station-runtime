@@ -21,6 +21,198 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type AppCenterInspection struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion  uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	UserId         string                 `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	OrganizationId string                 `protobuf:"bytes,3,opt,name=organization_id,json=organizationId,proto3" json:"organization_id,omitempty"`
+	StationId      string                 `protobuf:"bytes,4,opt,name=station_id,json=stationId,proto3" json:"station_id,omitempty"`
+	AppId          string                 `protobuf:"bytes,5,opt,name=app_id,json=appId,proto3" json:"app_id,omitempty"`
+	AppVersion     string                 `protobuf:"bytes,6,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
+	Action         string                 `protobuf:"bytes,7,opt,name=action,proto3" json:"action,omitempty"`
+	InstallationId string                 `protobuf:"bytes,8,opt,name=installation_id,json=installationId,proto3" json:"installation_id,omitempty"`
+	TemplateDigest string                 `protobuf:"bytes,9,opt,name=template_digest,json=templateDigest,proto3" json:"template_digest,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *AppCenterInspection) Reset() {
+	*x = AppCenterInspection{}
+	mi := &file_app_runtime_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppCenterInspection) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppCenterInspection) ProtoMessage() {}
+
+func (x *AppCenterInspection) ProtoReflect() protoreflect.Message {
+	mi := &file_app_runtime_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppCenterInspection.ProtoReflect.Descriptor instead.
+func (*AppCenterInspection) Descriptor() ([]byte, []int) {
+	return file_app_runtime_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *AppCenterInspection) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *AppCenterInspection) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetOrganizationId() string {
+	if x != nil {
+		return x.OrganizationId
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetStationId() string {
+	if x != nil {
+		return x.StationId
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetAppId() string {
+	if x != nil {
+		return x.AppId
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetAppVersion() string {
+	if x != nil {
+		return x.AppVersion
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetAction() string {
+	if x != nil {
+		return x.Action
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetInstallationId() string {
+	if x != nil {
+		return x.InstallationId
+	}
+	return ""
+}
+
+func (x *AppCenterInspection) GetTemplateDigest() string {
+	if x != nil {
+		return x.TemplateDigest
+	}
+	return ""
+}
+
+type AppCenterObservation struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	SchemaVersion  uint32                 `protobuf:"varint,1,opt,name=schema_version,json=schemaVersion,proto3" json:"schema_version,omitempty"`
+	TemplateDigest string                 `protobuf:"bytes,2,opt,name=template_digest,json=templateDigest,proto3" json:"template_digest,omitempty"`
+	Namespace      string                 `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	WorkloadName   string                 `protobuf:"bytes,4,opt,name=workload_name,json=workloadName,proto3" json:"workload_name,omitempty"`
+	WorkloadUid    string                 `protobuf:"bytes,5,opt,name=workload_uid,json=workloadUid,proto3" json:"workload_uid,omitempty"`
+	State          string                 `protobuf:"bytes,6,opt,name=state,proto3" json:"state,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *AppCenterObservation) Reset() {
+	*x = AppCenterObservation{}
+	mi := &file_app_runtime_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AppCenterObservation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AppCenterObservation) ProtoMessage() {}
+
+func (x *AppCenterObservation) ProtoReflect() protoreflect.Message {
+	mi := &file_app_runtime_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AppCenterObservation.ProtoReflect.Descriptor instead.
+func (*AppCenterObservation) Descriptor() ([]byte, []int) {
+	return file_app_runtime_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *AppCenterObservation) GetSchemaVersion() uint32 {
+	if x != nil {
+		return x.SchemaVersion
+	}
+	return 0
+}
+
+func (x *AppCenterObservation) GetTemplateDigest() string {
+	if x != nil {
+		return x.TemplateDigest
+	}
+	return ""
+}
+
+func (x *AppCenterObservation) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *AppCenterObservation) GetWorkloadName() string {
+	if x != nil {
+		return x.WorkloadName
+	}
+	return ""
+}
+
+func (x *AppCenterObservation) GetWorkloadUid() string {
+	if x != nil {
+		return x.WorkloadUid
+	}
+	return ""
+}
+
+func (x *AppCenterObservation) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
 type AppCenterRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Command       *AppRequest            `protobuf:"bytes,1,opt,name=command,proto3" json:"command,omitempty"`
@@ -31,7 +223,7 @@ type AppCenterRequest struct {
 
 func (x *AppCenterRequest) Reset() {
 	*x = AppCenterRequest{}
-	mi := &file_app_runtime_proto_msgTypes[0]
+	mi := &file_app_runtime_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +235,7 @@ func (x *AppCenterRequest) String() string {
 func (*AppCenterRequest) ProtoMessage() {}
 
 func (x *AppCenterRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_app_runtime_proto_msgTypes[0]
+	mi := &file_app_runtime_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +248,7 @@ func (x *AppCenterRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppCenterRequest.ProtoReflect.Descriptor instead.
 func (*AppCenterRequest) Descriptor() ([]byte, []int) {
-	return file_app_runtime_proto_rawDescGZIP(), []int{0}
+	return file_app_runtime_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *AppCenterRequest) GetCommand() *AppRequest {
@@ -86,7 +278,7 @@ type AppCenterGuard struct {
 
 func (x *AppCenterGuard) Reset() {
 	*x = AppCenterGuard{}
-	mi := &file_app_runtime_proto_msgTypes[1]
+	mi := &file_app_runtime_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -98,7 +290,7 @@ func (x *AppCenterGuard) String() string {
 func (*AppCenterGuard) ProtoMessage() {}
 
 func (x *AppCenterGuard) ProtoReflect() protoreflect.Message {
-	mi := &file_app_runtime_proto_msgTypes[1]
+	mi := &file_app_runtime_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -111,7 +303,7 @@ func (x *AppCenterGuard) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppCenterGuard.ProtoReflect.Descriptor instead.
 func (*AppCenterGuard) Descriptor() ([]byte, []int) {
-	return file_app_runtime_proto_rawDescGZIP(), []int{1}
+	return file_app_runtime_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *AppCenterGuard) GetSchemaVersion() uint32 {
@@ -172,7 +364,7 @@ type AppRequest struct {
 
 func (x *AppRequest) Reset() {
 	*x = AppRequest{}
-	mi := &file_app_runtime_proto_msgTypes[2]
+	mi := &file_app_runtime_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -184,7 +376,7 @@ func (x *AppRequest) String() string {
 func (*AppRequest) ProtoMessage() {}
 
 func (x *AppRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_app_runtime_proto_msgTypes[2]
+	mi := &file_app_runtime_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -197,7 +389,7 @@ func (x *AppRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppRequest.ProtoReflect.Descriptor instead.
 func (*AppRequest) Descriptor() ([]byte, []int) {
-	return file_app_runtime_proto_rawDescGZIP(), []int{2}
+	return file_app_runtime_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AppRequest) GetOperationId() string {
@@ -289,7 +481,7 @@ type PreinstalledRelease struct {
 
 func (x *PreinstalledRelease) Reset() {
 	*x = PreinstalledRelease{}
-	mi := &file_app_runtime_proto_msgTypes[3]
+	mi := &file_app_runtime_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -301,7 +493,7 @@ func (x *PreinstalledRelease) String() string {
 func (*PreinstalledRelease) ProtoMessage() {}
 
 func (x *PreinstalledRelease) ProtoReflect() protoreflect.Message {
-	mi := &file_app_runtime_proto_msgTypes[3]
+	mi := &file_app_runtime_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -314,7 +506,7 @@ func (x *PreinstalledRelease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreinstalledRelease.ProtoReflect.Descriptor instead.
 func (*PreinstalledRelease) Descriptor() ([]byte, []int) {
-	return file_app_runtime_proto_rawDescGZIP(), []int{3}
+	return file_app_runtime_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PreinstalledRelease) GetReleaseRef() string {
@@ -360,7 +552,7 @@ type AppProgress struct {
 
 func (x *AppProgress) Reset() {
 	*x = AppProgress{}
-	mi := &file_app_runtime_proto_msgTypes[4]
+	mi := &file_app_runtime_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -372,7 +564,7 @@ func (x *AppProgress) String() string {
 func (*AppProgress) ProtoMessage() {}
 
 func (x *AppProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_app_runtime_proto_msgTypes[4]
+	mi := &file_app_runtime_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -385,7 +577,7 @@ func (x *AppProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AppProgress.ProtoReflect.Descriptor instead.
 func (*AppProgress) Descriptor() ([]byte, []int) {
-	return file_app_runtime_proto_rawDescGZIP(), []int{4}
+	return file_app_runtime_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AppProgress) GetOperationId() string {
@@ -441,7 +633,26 @@ var File_app_runtime_proto protoreflect.FileDescriptor
 
 const file_app_runtime_proto_rawDesc = "" +
 	"\n" +
-	"\x11app-runtime.proto\x12\x12station.runtime.v1\"\x86\x01\n" +
+	"\x11app-runtime.proto\x12\x12station.runtime.v1\"\xbf\x02\n" +
+	"\x13AppCenterInspection\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x12'\n" +
+	"\x0forganization_id\x18\x03 \x01(\tR\x0eorganizationId\x12\x1d\n" +
+	"\n" +
+	"station_id\x18\x04 \x01(\tR\tstationId\x12\x15\n" +
+	"\x06app_id\x18\x05 \x01(\tR\x05appId\x12\x1f\n" +
+	"\vapp_version\x18\x06 \x01(\tR\n" +
+	"appVersion\x12\x16\n" +
+	"\x06action\x18\a \x01(\tR\x06action\x12'\n" +
+	"\x0finstallation_id\x18\b \x01(\tR\x0einstallationId\x12'\n" +
+	"\x0ftemplate_digest\x18\t \x01(\tR\x0etemplateDigest\"\xe2\x01\n" +
+	"\x14AppCenterObservation\x12%\n" +
+	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12'\n" +
+	"\x0ftemplate_digest\x18\x02 \x01(\tR\x0etemplateDigest\x12\x1c\n" +
+	"\tnamespace\x18\x03 \x01(\tR\tnamespace\x12#\n" +
+	"\rworkload_name\x18\x04 \x01(\tR\fworkloadName\x12!\n" +
+	"\fworkload_uid\x18\x05 \x01(\tR\vworkloadUid\x12\x14\n" +
+	"\x05state\x18\x06 \x01(\tR\x05state\"\x86\x01\n" +
 	"\x10AppCenterRequest\x128\n" +
 	"\acommand\x18\x01 \x01(\v2\x1e.station.runtime.v1.AppRequestR\acommand\x128\n" +
 	"\x05guard\x18\x02 \x01(\v2\".station.runtime.v1.AppCenterGuardR\x05guard\"\xd3\x01\n" +
@@ -487,9 +698,10 @@ const file_app_runtime_proto_rawDesc = "" +
 	"\f_total_bytes2Z\n" +
 	"\n" +
 	"AppRuntime\x12L\n" +
-	"\tReconcile\x12\x1e.station.runtime.v1.AppRequest\x1a\x1f.station.runtime.v1.AppProgress2k\n" +
+	"\tReconcile\x12\x1e.station.runtime.v1.AppRequest\x1a\x1f.station.runtime.v1.AppProgress2\xce\x01\n" +
 	"\x10AppCenterRuntime\x12W\n" +
-	"\x0eReconcileBound\x12$.station.runtime.v1.AppCenterRequest\x1a\x1f.station.runtime.v1.AppProgressBQZOgithub.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1;runtimev1b\x06proto3"
+	"\x0eReconcileBound\x12$.station.runtime.v1.AppCenterRequest\x1a\x1f.station.runtime.v1.AppProgress\x12a\n" +
+	"\fInspectBound\x12'.station.runtime.v1.AppCenterInspection\x1a(.station.runtime.v1.AppCenterObservationBQZOgithub.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1;runtimev1b\x06proto3"
 
 var (
 	file_app_runtime_proto_rawDescOnce sync.Once
@@ -503,24 +715,28 @@ func file_app_runtime_proto_rawDescGZIP() []byte {
 	return file_app_runtime_proto_rawDescData
 }
 
-var file_app_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_app_runtime_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_app_runtime_proto_goTypes = []any{
-	(*AppCenterRequest)(nil),    // 0: station.runtime.v1.AppCenterRequest
-	(*AppCenterGuard)(nil),      // 1: station.runtime.v1.AppCenterGuard
-	(*AppRequest)(nil),          // 2: station.runtime.v1.AppRequest
-	(*PreinstalledRelease)(nil), // 3: station.runtime.v1.PreinstalledRelease
-	(*AppProgress)(nil),         // 4: station.runtime.v1.AppProgress
+	(*AppCenterInspection)(nil),  // 0: station.runtime.v1.AppCenterInspection
+	(*AppCenterObservation)(nil), // 1: station.runtime.v1.AppCenterObservation
+	(*AppCenterRequest)(nil),     // 2: station.runtime.v1.AppCenterRequest
+	(*AppCenterGuard)(nil),       // 3: station.runtime.v1.AppCenterGuard
+	(*AppRequest)(nil),           // 4: station.runtime.v1.AppRequest
+	(*PreinstalledRelease)(nil),  // 5: station.runtime.v1.PreinstalledRelease
+	(*AppProgress)(nil),          // 6: station.runtime.v1.AppProgress
 }
 var file_app_runtime_proto_depIdxs = []int32{
-	2, // 0: station.runtime.v1.AppCenterRequest.command:type_name -> station.runtime.v1.AppRequest
-	1, // 1: station.runtime.v1.AppCenterRequest.guard:type_name -> station.runtime.v1.AppCenterGuard
-	3, // 2: station.runtime.v1.AppRequest.preinstalled_release:type_name -> station.runtime.v1.PreinstalledRelease
-	2, // 3: station.runtime.v1.AppRuntime.Reconcile:input_type -> station.runtime.v1.AppRequest
-	0, // 4: station.runtime.v1.AppCenterRuntime.ReconcileBound:input_type -> station.runtime.v1.AppCenterRequest
-	4, // 5: station.runtime.v1.AppRuntime.Reconcile:output_type -> station.runtime.v1.AppProgress
-	4, // 6: station.runtime.v1.AppCenterRuntime.ReconcileBound:output_type -> station.runtime.v1.AppProgress
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
+	4, // 0: station.runtime.v1.AppCenterRequest.command:type_name -> station.runtime.v1.AppRequest
+	3, // 1: station.runtime.v1.AppCenterRequest.guard:type_name -> station.runtime.v1.AppCenterGuard
+	5, // 2: station.runtime.v1.AppRequest.preinstalled_release:type_name -> station.runtime.v1.PreinstalledRelease
+	4, // 3: station.runtime.v1.AppRuntime.Reconcile:input_type -> station.runtime.v1.AppRequest
+	2, // 4: station.runtime.v1.AppCenterRuntime.ReconcileBound:input_type -> station.runtime.v1.AppCenterRequest
+	0, // 5: station.runtime.v1.AppCenterRuntime.InspectBound:input_type -> station.runtime.v1.AppCenterInspection
+	6, // 6: station.runtime.v1.AppRuntime.Reconcile:output_type -> station.runtime.v1.AppProgress
+	6, // 7: station.runtime.v1.AppCenterRuntime.ReconcileBound:output_type -> station.runtime.v1.AppProgress
+	1, // 8: station.runtime.v1.AppCenterRuntime.InspectBound:output_type -> station.runtime.v1.AppCenterObservation
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
 	3, // [3:3] is the sub-list for extension extendee
 	0, // [0:3] is the sub-list for field type_name
@@ -531,14 +747,14 @@ func file_app_runtime_proto_init() {
 	if File_app_runtime_proto != nil {
 		return
 	}
-	file_app_runtime_proto_msgTypes[4].OneofWrappers = []any{}
+	file_app_runtime_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_app_runtime_proto_rawDesc), len(file_app_runtime_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   2,
 		},

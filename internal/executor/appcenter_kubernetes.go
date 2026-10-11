@@ -30,7 +30,7 @@ func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, ope
 
 func (k *Kubernetes) CheckAppCenter(ctx context.Context, t Target, action, operation, station, org string, first bool) error {
 	conflict := status.Error(codes.FailedPrecondition, "Protected workload identity or ownership changed")
-	if !t.AppCenter || t.InstallationID == "" || t.Deployment == nil ||
+	if !t.AppCenter || (t.InstallationID == "" && !(first && action == "install")) || t.Deployment == nil ||
 		(action != "install" && action != "start") || (action == "start" && t.ExpectedUID == "") {
 		return conflict
 	}

@@ -130,6 +130,7 @@ var AppRuntime_ServiceDesc = grpc.ServiceDesc{
 
 const (
 	AppCenterRuntime_ReconcileBound_FullMethodName = "/station.runtime.v1.AppCenterRuntime/ReconcileBound"
+	AppCenterRuntime_InspectBound_FullMethodName   = "/station.runtime.v1.AppCenterRuntime/InspectBound"
 )
 
 // AppCenterRuntimeClient is the client API for AppCenterRuntime service.
@@ -140,6 +141,8 @@ const (
 // never ignore execution guards while invoking legacy Reconcile.
 type AppCenterRuntimeClient interface {
 	ReconcileBound(ctx context.Context, in *AppCenterRequest, opts ...grpc.CallOption) (*AppProgress, error)
+	// Read-only capability and current-target inspection. Never accepts an operation.
+	InspectBound(ctx context.Context, in *AppCenterInspection, opts ...grpc.CallOption) (*AppCenterObservation, error)
 }
 
 type appCenterRuntimeClient struct {
@@ -160,6 +163,16 @@ func (c *appCenterRuntimeClient) ReconcileBound(ctx context.Context, in *AppCent
 	return out, nil
 }
 
+func (c *appCenterRuntimeClient) InspectBound(ctx context.Context, in *AppCenterInspection, opts ...grpc.CallOption) (*AppCenterObservation, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(AppCenterObservation)
+	err := c.cc.Invoke(ctx, AppCenterRuntime_InspectBound_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AppCenterRuntimeServer is the server API for AppCenterRuntime service.
 // All implementations must embed UnimplementedAppCenterRuntimeServer
 // for forward compatibility.
@@ -168,6 +181,8 @@ func (c *appCenterRuntimeClient) ReconcileBound(ctx context.Context, in *AppCent
 // never ignore execution guards while invoking legacy Reconcile.
 type AppCenterRuntimeServer interface {
 	ReconcileBound(context.Context, *AppCenterRequest) (*AppProgress, error)
+	// Read-only capability and current-target inspection. Never accepts an operation.
+	InspectBound(context.Context, *AppCenterInspection) (*AppCenterObservation, error)
 	mustEmbedUnimplementedAppCenterRuntimeServer()
 }
 
@@ -180,6 +195,9 @@ type UnimplementedAppCenterRuntimeServer struct{}
 
 func (UnimplementedAppCenterRuntimeServer) ReconcileBound(context.Context, *AppCenterRequest) (*AppProgress, error) {
 	return nil, status.Error(codes.Unimplemented, "method ReconcileBound not implemented")
+}
+func (UnimplementedAppCenterRuntimeServer) InspectBound(context.Context, *AppCenterInspection) (*AppCenterObservation, error) {
+	return nil, status.Error(codes.Unimplemented, "method InspectBound not implemented")
 }
 func (UnimplementedAppCenterRuntimeServer) mustEmbedUnimplementedAppCenterRuntimeServer() {}
 func (UnimplementedAppCenterRuntimeServer) testEmbeddedByValue()                          {}
@@ -220,6 +238,24 @@ func _AppCenterRuntime_ReconcileBound_Handler(srv interface{}, ctx context.Conte
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AppCenterRuntime_InspectBound_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(AppCenterInspection)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AppCenterRuntimeServer).InspectBound(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AppCenterRuntime_InspectBound_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AppCenterRuntimeServer).InspectBound(ctx, req.(*AppCenterInspection))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AppCenterRuntime_ServiceDesc is the grpc.ServiceDesc for AppCenterRuntime service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -230,6 +266,10 @@ var AppCenterRuntime_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ReconcileBound",
 			Handler:    _AppCenterRuntime_ReconcileBound_Handler,
+		},
+		{
+			MethodName: "InspectBound",
+			Handler:    _AppCenterRuntime_InspectBound_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
