@@ -74,6 +74,10 @@ func (m *HTTPManagementMaintenance) Verify(ctx context.Context, b ManagementBind
 	return m.call(ctx, b, c, target, "status")
 }
 
+func (m *HTTPManagementMaintenance) Release(ctx context.Context, b ManagementBinding, c ManagementCheckpoint, target bool) error {
+	return m.call(ctx, b, c, target, "release")
+}
+
 func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBinding, c ManagementCheckpoint, target bool, action string) error {
 	if m == nil || m.client == nil || m.Kubernetes == nil || m.Kubernetes.Client == nil || !managementID(b.UserID) || b.ExpectedRevision < 1 {
 		return ErrManagementReplacement
@@ -140,8 +144,12 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 	if response.StatusCode != http.StatusOK {
 		return ErrManagementMaintenanceUnavailable
 	}
+	wantState := "sealed"
+	if action == "release" {
+		wantState = "released"
+	}
 	var actual managementProofResponse
-	if strictjson.Decode(response.Body, 16<<10, &actual) != nil || actual.managementProof != proof || actual.State != "sealed" {
+	if strictjson.Decode(response.Body, 16<<10, &actual) != nil || actual.managementProof != proof || actual.State != wantState {
 		return ErrManagementReplacement
 	}
 	after, err := m.observe(ctx, driver, c, target, config)

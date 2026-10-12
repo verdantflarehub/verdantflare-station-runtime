@@ -5,8 +5,51 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+type checkpointRow []byte
+
+func (r checkpointRow) Scan(dest ...any) error {
+	*dest[0].(*[]byte) = make([]byte, 32)
+	*dest[1].(*string) = "prepared"
+	*dest[2].(*int64) = 1
+	*dest[3].(*[]byte) = []byte(r)
+	return nil
+}
+
+func TestManagementJournalCheckpointJSON(t *testing.T) {
+	driver, _, checkpoint := managementFixture(t)
+	raw, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Both omitted and explicit null creationTimestamp are valid Kubernetes
+	// metadata. Serialization differs across client/toolchain versions.
+	var object map[string]any
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	object["deployment"].(map[string]any)["metadata"].(map[string]any)["creationTimestamp"] = nil
+	raw, err = json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := decodeManagementRecord(checkpointRow(raw))
+	if err != nil || record.Checkpoint == nil || !driver.validCheckpoint(*record.Checkpoint) {
+		t.Fatal("typed checkpoint did not survive durable round trip", err)
+	}
+	for _, invalid := range []string{
+		strings.TrimSuffix(string(raw), "}") + `,"unexpected":1}`,
+		strings.TrimSuffix(string(raw), "}") + `,"deployment":null}`,
+		strings.Repeat(" ", 4<<20) + string(raw),
+	} {
+		if _, err := decodeManagementRecord(checkpointRow(invalid)); !errors.Is(err, ErrManagementReplacement) {
+			t.Fatal("invalid checkpoint accepted", err)
+		}
+	}
+}
 
 type maintenanceFake struct {
 	calls              []string

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 	"time"
 
@@ -22,7 +23,8 @@ var ErrManagementBusy = errors.New("MANAGEMENT_TRANSITION_BUSY")
 // Only the authenticated Core coordinator may call this internal component.
 // There is deliberately no HTTP/RPC surface until maintenance/image proof and
 // Core publication/recovery are wired. Neither prepared nor restored is a
-// terminal upgrade result, and this journal never releases maintenance.
+// terminal upgrade result. Release requires Core's durable publication and
+// a separate, direction-bound journal barrier.
 type ManagementJournal struct {
 	Pool        *pgxpool.Pool
 	StationID   string
@@ -36,6 +38,10 @@ type ManagementJournal struct {
 type ManagementMaintenance interface {
 	Seal(context.Context, ManagementBinding, ManagementCheckpoint) error
 	Verify(context.Context, ManagementBinding, ManagementCheckpoint, bool) error
+}
+
+type ManagementMaintenanceReleaser interface {
+	Release(context.Context, ManagementBinding, ManagementCheckpoint, bool) error
 }
 
 type ManagementRelease struct {
@@ -91,7 +97,7 @@ func managementHash(b ManagementBinding) []byte {
 }
 
 func managementPhase(phase string) bool {
-	return slices.Contains([]string{"checking", "sealing", "applying", "verifying", "prepared", "restoring", "restored", "recovery_required"}, phase)
+	return slices.Contains([]string{"checking", "sealing", "applying", "verifying", "prepared", "restoring", "restored", "recovery_required", "releasing_source", "releasing_target", "released_source", "released_target"}, phase)
 }
 
 func decodeManagementRecord(row pgx.Row) (managementRecord, error) {
@@ -105,12 +111,22 @@ func decodeManagementRecord(row pgx.Row) (managementRecord, error) {
 	}
 	if raw != nil {
 		var c ManagementCheckpoint
-		if strictjson.Decode(bytes.NewReader(raw), 4<<20, &c) != nil {
+		// Kubernetes object JSON allows null optional metadata (including
+		// creationTimestamp). This journal contains typed Kubernetes objects, not
+		// the null-free management wire protocol. Keep bounds, duplicate-key
+		// rejection and unknown-field rejection; validate ownership/specs below.
+		checked, err := strictjson.ReadValue(bytes.NewReader(raw), 4<<20)
+		if err != nil {
+			return r, ErrManagementReplacement
+		}
+		decoder := json.NewDecoder(bytes.NewReader(checked))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&c) != nil {
 			return r, ErrManagementReplacement
 		}
 		r.Checkpoint = &c
 	}
-	if r.Checkpoint == nil && r.Phase != "checking" && r.Phase != "restored" {
+	if r.Checkpoint == nil && !slices.Contains([]string{"checking", "restored", "releasing_source", "released_source"}, r.Phase) {
 		return r, ErrManagementReplacement
 	}
 	return r, nil
@@ -119,6 +135,22 @@ func decodeManagementRecord(row pgx.Row) (managementRecord, error) {
 // Reconcile performs at most one durable phase or one Kubernetes resource
 // update. restore is accepted only after Core has durably requested recovery.
 func (j *ManagementJournal) Reconcile(ctx context.Context, operation string, restore bool) (ManagementProgress, error) {
+	mode := "prepare"
+	if restore {
+		mode = "restore"
+	}
+	return j.reconcile(ctx, operation, mode)
+}
+
+func (j *ManagementJournal) Release(ctx context.Context, operation string, target bool) (ManagementProgress, error) {
+	mode := "release_source"
+	if target {
+		mode = "release_target"
+	}
+	return j.reconcile(ctx, operation, mode)
+}
+
+func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode string) (ManagementProgress, error) {
 	var empty ManagementProgress
 	if j == nil || j.Pool == nil || j.Kubernetes == nil || j.Maintenance == nil || !managementID(operation) || !managementID(j.StationID) {
 		return empty, ErrManagementReplacement
@@ -145,8 +177,21 @@ func (j *ManagementJournal) Reconcile(ctx context.Context, operation string, res
 	if err != nil {
 		return empty, err
 	}
-	if restore != slices.Contains([]string{"restoring", "recovery_required"}, corePhase) {
+	releasing := mode == "release_source" || mode == "release_target"
+	restore := mode == "restore"
+	if releasing != (corePhase == "releasing") || restore != slices.Contains([]string{"restoring", "recovery_required"}, corePhase) {
 		return empty, ErrManagementReplacement
+	}
+	if releasing {
+		var version string
+		var revision int64
+		if err := tx.QueryRow(ctx, `SELECT app_version,revision FROM station.app_installations WHERE installation_id=$1`, b.InstallationID).Scan(&version, &revision); err != nil {
+			return empty, err
+		}
+		target := version == b.Target.AppVersion && revision == b.ExpectedRevision+1
+		if target != (mode == "release_target") {
+			return empty, ErrManagementReplacement
+		}
 	}
 	source, ok := j.Targets[b.Source.AppID+"@"+b.Source.AppVersion]
 	target, targetOK := j.Targets[b.Target.AppID+"@"+b.Target.AppVersion]
@@ -166,6 +211,9 @@ func (j *ManagementJournal) Reconcile(ctx context.Context, operation string, res
 	}
 	r, err := decodeManagementRecord(tx.QueryRow(ctx, `SELECT input_hash,phase,revision,checkpoint FROM station.runtime_management_transitions WHERE operation_id=$1 FOR UPDATE`, operation))
 	if errors.Is(err, pgx.ErrNoRows) {
+		if releasing {
+			return empty, ErrManagementReplacement
+		}
 		// Do not call Capture, Seal, or Update until this commit is durable.
 		_, err = tx.Exec(ctx, `INSERT INTO station.runtime_management_transitions(operation_id,station_id,app_id,input_hash,phase) VALUES($1,$2,$3,$4,'checking')`, operation, j.StationID, app, managementHash(b))
 		if err != nil {
@@ -182,7 +230,12 @@ func (j *ManagementJournal) Reconcile(ctx context.Context, operation string, res
 	if r.Checkpoint != nil && !driver.validCheckpoint(*r.Checkpoint) {
 		return empty, ErrManagementReplacement
 	}
-	next, err := advanceManagement(ctx, r, b, driver, j.Maintenance, restore)
+	var next managementRecord
+	if releasing {
+		next, err = advanceManagementRelease(ctx, r, b, j.Maintenance, mode == "release_target")
+	} else {
+		next, err = advanceManagement(ctx, r, b, driver, j.Maintenance, restore)
+	}
 	if err != nil {
 		return empty, err
 	}
@@ -214,7 +267,7 @@ func readManagementBinding(ctx context.Context, tx pgx.Tx, operation, station, a
 		return b, "", err
 	}
 	if strictjson.Decode(bytes.NewReader(source), 64<<10, &b.Source) != nil || strictjson.Decode(bytes.NewReader(target), 64<<10, &b.Target) != nil ||
-		!managementID(b.InstallationID) || !managementID(b.OrganizationID) || !managementID(b.UserID) || b.Source.AppID != app || b.Target.AppID != app || b.Source.AppVersion == b.Target.AppVersion || b.ExpectedRevision < 1 {
+		!managementID(b.InstallationID) || !managementID(b.OrganizationID) || !managementID(b.UserID) || b.Source.AppID != app || b.Target.AppID != app || b.Source.AppVersion == b.Target.AppVersion || b.ExpectedRevision < 1 || b.ExpectedRevision > math.MaxInt64-2 {
 		return b, "", ErrManagementReplacement
 	}
 	// Before Core publication only the original revision is valid. During
@@ -223,13 +276,13 @@ func readManagementBinding(ctx context.Context, tx pgx.Tx, operation, station, a
 	if status != "running" && !(status == "recovery_required" && recovering) {
 		return b, "", ErrManagementReplacement
 	}
-	if !slices.Contains([]string{"checking", "sealing", "applying", "verifying", "restoring", "recovery_required"}, phase) {
+	if !slices.Contains([]string{"checking", "sealing", "applying", "verifying", "publishing", "releasing", "restoring", "recovery_required"}, phase) {
 		return b, "", ErrManagementReplacement
 	}
 	original := installedVersion == b.Source.AppVersion && revision == b.ExpectedRevision
 	published := installedVersion == b.Target.AppVersion && revision == b.ExpectedRevision+1
 	restored := installedVersion == b.Source.AppVersion && revision == b.ExpectedRevision+2
-	if !original && !(recovering && (published || restored)) {
+	if !original && !((recovering || phase == "releasing") && (published || restored)) {
 		return b, "", ErrManagementReplacement
 	}
 	return b, phase, nil
@@ -242,6 +295,9 @@ type managementDriver interface {
 }
 
 func advanceManagement(ctx context.Context, r managementRecord, b ManagementBinding, d managementDriver, m ManagementMaintenance, restore bool) (managementRecord, error) {
+	if slices.Contains([]string{"releasing_source", "releasing_target", "released_source", "released_target"}, r.Phase) {
+		return r, ErrManagementReplacement // Release may already have admitted new work.
+	}
 	if restore && r.Phase != "restoring" && r.Phase != "restored" {
 		if r.Checkpoint == nil {
 			r.Phase = "restored"
@@ -302,4 +358,37 @@ func advanceManagement(ctx context.Context, r managementRecord, b ManagementBind
 		return r, nil
 	}
 	return r, err
+}
+
+func advanceManagementRelease(ctx context.Context, r managementRecord, b ManagementBinding, m ManagementMaintenance, target bool) (managementRecord, error) {
+	prepared, releasing, released := "restored", "releasing_source", "released_source"
+	if target {
+		prepared, releasing, released = "prepared", "releasing_target", "released_target"
+	}
+	if r.Phase == prepared {
+		r.Phase = releasing
+		return r, nil // Commit intent before the first external release.
+	}
+	if r.Phase != releasing && r.Phase != released {
+		return r, ErrManagementReplacement
+	}
+	if r.Checkpoint == nil {
+		if target {
+			return r, ErrManagementReplacement
+		}
+		// A restored record without a checkpoint never reached sealing.
+		r.Phase = released
+		return r, nil
+	}
+	releaser, ok := m.(ManagementMaintenanceReleaser)
+	if !ok {
+		return r, ErrManagementReplacement
+	}
+	// Even after a lost Core terminal response, re-observe this original
+	// idempotent release. Never re-seal or compensate an uncertain release.
+	if err := releaser.Release(ctx, b, *r.Checkpoint, target); err != nil {
+		return r, err
+	}
+	r.Phase = released
+	return r, nil
 }
