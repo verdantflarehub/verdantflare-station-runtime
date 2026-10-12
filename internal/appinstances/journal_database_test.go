@@ -434,6 +434,90 @@ func TestJournalAccessRequiresRunningOriginalProcessAndNeverRepairsResources(t *
 		t.Fatal("bound private access failed", e)
 	}
 	assertNoEffects(t, c)
+	t.Run("concurrent access retains read write exclusion", func(t *testing.T) {
+		observer := j.Observer
+		defer func() { j.Observer = observer }()
+		const readers = 8
+		entered := make(chan struct{}, readers)
+		release := make(chan struct{})
+		var once sync.Once
+		unblock := func() { once.Do(func() { close(release) }) }
+		var group sync.WaitGroup
+		defer func() { unblock(); group.Wait() }()
+		j.Observer = HTTPWorkerObserver{Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			entered <- struct{}{}
+			select {
+			case <-release:
+				return response(proofFor(in, p, Observation{PodUID: string(pod.UID)}, boot)), nil
+			case <-req.Context().Done():
+				return nil, req.Context().Err()
+			}
+		})}}
+		type result struct {
+			access WorkerAccess
+			err    error
+		}
+		results := make(chan result, readers)
+		for range readers {
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				value, err := j.Access(ctx, in, p)
+				results <- result{value, err}
+			}()
+		}
+		deadline := time.NewTimer(10 * time.Second)
+		defer deadline.Stop()
+		for range readers {
+			select {
+			case <-entered:
+			case early := <-results:
+				t.Fatalf("parallel read rejected before worker observation: %v", early.err)
+			case <-deadline.C:
+				t.Fatal("parallel reads did not reach worker observation")
+			}
+		}
+		if _, err := j.AdvanceResources(ctx, in, p); !errors.Is(err, ErrBusy) {
+			t.Fatal("resource mutation was not excluded by active readers", err)
+		}
+		if _, err := j.Accept(ctx, in, p); !errors.Is(err, ErrBusy) {
+			t.Fatal("start admission was not excluded by active readers", err)
+		}
+		unblock()
+		group.Wait()
+		for range readers {
+			got := <-results
+			if got.err != nil || got.access != access {
+				t.Fatal("parallel access changed verified binding", got.err)
+			}
+		}
+		assertNoEffects(t, c)
+		j.Observer = observer
+		_, err := j.withRecord(ctx, in, p, func(_ *pgxpool.Conn, _ *StartRecord) error {
+			if got, err := j.Access(ctx, in, p); !errors.Is(err, ErrBusy) || got != (WorkerAccess{}) {
+				t.Fatal("exclusive operation did not exclude access", err)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal("shared lock was retained after access", err)
+		}
+		// Cancellation while holding the read lock must also release it, without
+		// relying on the canceled request context for cleanup.
+		canceled, cancel := context.WithCancel(ctx)
+		j.Observer = HTTPWorkerObserver{Client: &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			cancel()
+			return nil, req.Context().Err()
+		})}}
+		if got, err := j.Access(canceled, in, p); err == nil || got != (WorkerAccess{}) {
+			t.Fatal("canceled access returned a worker grant")
+		}
+		cancel()
+		j.Observer = observer
+		if _, err := j.AdvanceResources(ctx, in, p); err != nil {
+			t.Fatal("cancellation retained shared lock", err)
+		}
+	})
 	authorize := j.Authorize
 	j.Authorize = func(context.Context, Run, Profile) (int64, error) { return 0, ErrDenied }
 	if got, e := j.Access(ctx, in, p); !errors.Is(e, ErrDenied) || got != (WorkerAccess{}) {

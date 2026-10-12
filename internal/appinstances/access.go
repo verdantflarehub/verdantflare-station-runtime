@@ -39,7 +39,7 @@ func (v WorkerAccess) valid(in Run, p Profile) bool {
 
 func (j *Journal) Access(ctx context.Context, in Run, p Profile) (WorkerAccess, error) {
 	out := WorkerAccess{}
-	_, e := j.withRecord(ctx, in, p, func(_ *pgxpool.Conn, r *StartRecord) error {
+	_, e := j.withLockedRecord(ctx, in, p, true, func(_ *pgxpool.Conn, r *StartRecord) error {
 		if r.Phase != "running" || r.Observation.BootID == "" {
 			return ErrNotReady
 		}

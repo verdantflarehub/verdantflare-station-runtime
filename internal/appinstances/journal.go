@@ -251,6 +251,12 @@ func (j *Journal) checkpoint(ctx context.Context, conn *pgxpool.Conn, r *StartRe
 
 // withRecord holds the instance lock through a fresh authorization and visit.
 func (j *Journal) withRecord(ctx context.Context, in Run, p Profile, visit func(*pgxpool.Conn, *StartRecord) error) (StartRecord, error) {
+	return j.withLockedRecord(ctx, in, p, false, visit)
+}
+
+// Access is read-only and can share an instance lock with other access checks.
+// Every mutating visit retains the exclusive lock on the same key.
+func (j *Journal) withLockedRecord(ctx context.Context, in Run, p Profile, shared bool, visit func(*pgxpool.Conn, *StartRecord) error) (StartRecord, error) {
 	if !j.valid(in, p) {
 		return StartRecord{}, ErrInvalid
 	}
@@ -260,8 +266,14 @@ func (j *Journal) withRecord(ctx context.Context, in Run, p Profile, visit func(
 	}
 	defer conn.Release()
 	key := "runtime-instance:" + in.StationID + ":" + in.InstanceID
+	acquire := `SELECT pg_try_advisory_lock(hashtextextended($1,0))`
+	release := `SELECT pg_advisory_unlock(hashtextextended($1,0))`
+	if shared {
+		acquire = `SELECT pg_try_advisory_lock_shared(hashtextextended($1,0))`
+		release = `SELECT pg_advisory_unlock_shared(hashtextextended($1,0))`
+	}
 	var locked bool
-	if e = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended($1,0))`, key).Scan(&locked); e != nil {
+	if e = conn.QueryRow(ctx, acquire, key).Scan(&locked); e != nil {
 		// A lost acquisition response leaves lock ownership uncertain. Never put
 		// this session back in the pool where it could retain an invisible lock.
 		discardConnection(conn)
@@ -274,7 +286,7 @@ func (j *Journal) withRecord(ctx context.Context, in Run, p Profile, visit func(
 		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var unlocked bool
-		if e := conn.QueryRow(cleanup, `SELECT pg_advisory_unlock(hashtextextended($1,0))`, key).Scan(&unlocked); e != nil || !unlocked {
+		if e := conn.QueryRow(cleanup, release, key).Scan(&unlocked); e != nil || !unlocked {
 			discardConnection(conn)
 		}
 	}()
