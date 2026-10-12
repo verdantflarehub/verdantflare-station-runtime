@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"log/slog"
 	"net"
@@ -58,6 +59,12 @@ func run() int {
 		return 1
 	}
 	defer pool.Close()
+	transitionToken := os.Getenv("STATION_APP_TRANSITION_CONTROL_TOKEN")
+	maintenance, err := executor.LoadManagementMaintenance(os.Getenv("STATION_APP_TRANSITION_MAINTENANCE_REGISTRY"), transitionToken, os.Getenv, driver, targets)
+	if err != nil || (maintenance != nil && transitionToken == os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")) {
+		logger.Error("invalid_transition_maintenance_configuration")
+		return 1
+	}
 	var profiles map[string]instances.HelperProfile
 	if path := os.Getenv("STATION_INSTANCE_REGISTRY"); path != "" {
 		profiles, err = instances.LoadProfiles(path)
@@ -111,6 +118,19 @@ func run() int {
 			return 1
 		}
 	}
+	if maintenance != nil {
+		credentials := []string{transitionToken}
+		for _, release := range maintenance.Releases {
+			credentials = append(credentials, release.Token)
+		}
+		for _, credential := range credentials {
+			_, reused := appCallers[sha256.Sum256([]byte("Bearer "+credential))]
+			if reused || credential == os.Getenv("STATION_INSTANCE_CONTROL_TOKEN") {
+				logger.Error("transition_credential_reused")
+				return 1
+			}
+		}
+	}
 	ready := func(c context.Context) error {
 		var id string
 		var table bool
@@ -126,6 +146,11 @@ func run() int {
 		if appProfiles != nil {
 			if e = pool.QueryRow(c, `SELECT to_regclass('station.app_instance_workspaces') IS NOT NULL AND to_regclass('station.app_instance_starts') IS NOT NULL AND to_regclass('station.app_instance_stops') IS NOT NULL AND to_regclass('station.app_installations') IS NOT NULL AND to_regclass('station.runtime_instance_workspaces') IS NOT NULL`).Scan(&table); e != nil || !table {
 				return errors.New("App instance migrations not ready")
+			}
+		}
+		if maintenance != nil {
+			if e = pool.QueryRow(c, `SELECT EXISTS(SELECT 1 FROM station.schema_migrations WHERE version=17 AND name='0017_runtime_management_release.sql')`).Scan(&table); e != nil || !table {
+				return errors.New("transition migrations not ready")
 			}
 		}
 		return nil
@@ -155,6 +180,10 @@ func run() int {
 		probeAddr = "127.0.0.1:5053"
 	}
 	mux := http.NewServeMux()
+	if maintenance != nil {
+		journal := &executor.ManagementJournal{Pool: pool, StationID: station, Targets: targets, Kubernetes: driver, Maintenance: maintenance}
+		mux.Handle(executor.ManagementReconcilePath, executor.ManagementHandler{Journal: journal, Token: transitionToken})
+	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		c, done := context.WithTimeout(r.Context(), 3*time.Second)
@@ -165,7 +194,7 @@ func run() int {
 		}
 		w.WriteHeader(200)
 	})
-	probe := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second}
+	probe := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 	done := make(chan error, 4)
 	var appInstanceServer *http.Server
 	if appProfiles != nil {

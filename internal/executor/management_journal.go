@@ -139,7 +139,7 @@ func (j *ManagementJournal) Reconcile(ctx context.Context, operation string, res
 	if restore {
 		mode = "restore"
 	}
-	return j.reconcile(ctx, operation, mode)
+	return j.reconcile(ctx, operation, mode, "")
 }
 
 func (j *ManagementJournal) Release(ctx context.Context, operation string, target bool) (ManagementProgress, error) {
@@ -147,10 +147,10 @@ func (j *ManagementJournal) Release(ctx context.Context, operation string, targe
 	if target {
 		mode = "release_target"
 	}
-	return j.reconcile(ctx, operation, mode)
+	return j.reconcile(ctx, operation, mode, "")
 }
 
-func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode string) (ManagementProgress, error) {
+func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode, expectedDigest string) (ManagementProgress, error) {
 	var empty ManagementProgress
 	if j == nil || j.Pool == nil || j.Kubernetes == nil || j.Maintenance == nil || !managementID(operation) || !managementID(j.StationID) {
 		return empty, ErrManagementReplacement
@@ -176,6 +176,9 @@ func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode strin
 	b, corePhase, err := readManagementBinding(ctx, tx, operation, j.StationID, app)
 	if err != nil {
 		return empty, err
+	}
+	if expectedDigest != "" && expectedDigest != "sha256:"+hex.EncodeToString(managementHash(b)) {
+		return empty, ErrManagementReplacement
 	}
 	releasing := mode == "release_source" || mode == "release_target"
 	restore := mode == "restore"
