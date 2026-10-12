@@ -99,9 +99,7 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 			Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 		Ports:        []corev1.ContainerPort{{Name: "control", ContainerPort: p.Port, Protocol: corev1.ProtocolTCP}},
 		VolumeMounts: []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}, {Name: "tmp", MountPath: "/tmp"}},
-		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
-			corev1.ResourceCPU: *resource.NewMilliQuantity(p.CPURequestMillis, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity(p.MemoryRequestBytes, resource.BinarySI)},
-			Limits: corev1.ResourceList{corev1.ResourceCPU: *resource.NewMilliQuantity(p.CPULimitMillis, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity(p.MemoryLimitBytes, resource.BinarySI)}}}
+		Resources:    profileResources(p)}
 	c.Env = append(c.Env, corev1.EnvVar{Name: "NVIDIA_VISIBLE_DEVICES", Value: "void"})
 	keys := make([]string, 0, len(p.Env))
 	for k := range p.Env {
@@ -165,4 +163,20 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 	pod.Annotations[specKey] = hex.EncodeToString(sum[:])
 	svc.Annotations[specKey] = pod.Annotations[specKey]
 	return pod, svc, nil
+}
+
+func profileResources(p Profile) corev1.ResourceRequirements {
+	if p.CPURequestMillis == 0 && p.MemoryRequestBytes == 0 {
+		return corev1.ResourceRequirements{}
+	}
+	r := corev1.ResourceRequirements{Requests: corev1.ResourceList{}, Limits: corev1.ResourceList{}}
+	if p.CPURequestMillis > 0 {
+		r.Requests[corev1.ResourceCPU] = *resource.NewMilliQuantity(p.CPURequestMillis, resource.DecimalSI)
+		r.Limits[corev1.ResourceCPU] = *resource.NewMilliQuantity(p.CPULimitMillis, resource.DecimalSI)
+	}
+	if p.MemoryRequestBytes > 0 {
+		r.Requests[corev1.ResourceMemory] = *resource.NewQuantity(p.MemoryRequestBytes, resource.BinarySI)
+		r.Limits[corev1.ResourceMemory] = *resource.NewQuantity(p.MemoryLimitBytes, resource.BinarySI)
+	}
+	return r
 }

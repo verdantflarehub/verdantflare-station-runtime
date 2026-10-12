@@ -64,8 +64,8 @@ func (p Profile) Valid() bool {
 		!label(p.Namespace) || p.Namespace == "default" || strings.HasPrefix(p.Namespace, "kube-") ||
 		p.NodeName == "" || len(validation.IsDNS1123Subdomain(p.NodeName)) != 0 || !label(p.Pool) || len(p.Claims) == 0 || len(p.Claims) > 1000 ||
 		p.StorageBytes < 1 || p.StorageBytes > 1<<50 || !imageVersion.MatchString(p.Image) || len(p.Image) > 512 || p.Port < 1024 || p.Port > 65535 ||
-		p.RunAsUser < 1 || p.RunAsUser > 2147483647 || p.CPURequestMillis < 1 || p.CPULimitMillis < p.CPURequestMillis || p.CPULimitMillis > 1048576 ||
-		p.MemoryRequestBytes < 1<<20 || p.MemoryLimitBytes < p.MemoryRequestBytes || p.MemoryLimitBytes > 1<<50 ||
+		p.RunAsUser < 1 || p.RunAsUser > 2147483647 || !optionalResourcePair(p.CPURequestMillis, p.CPULimitMillis, 1, 1048576) ||
+		!optionalResourcePair(p.MemoryRequestBytes, p.MemoryLimitBytes, 1<<20, 1<<50) ||
 		p.Env == nil || len(p.Env) > 64 || len(p.Bindings) != 8 {
 		return false
 	}
@@ -103,13 +103,39 @@ func (p Profile) Valid() bool {
 	return true
 }
 
+// Omission is canonical zero, never an implicit request or limit. Keep the
+// existing profile JSON encoding unchanged for durable legacy identities.
+func optionalResourcePair(request, limit, minimum, maximum int64) bool {
+	return request == 0 && limit == 0 || request >= minimum && limit >= request && limit <= maximum
+}
+
 func LoadProfiles(reader io.Reader) (map[string]Profile, error) {
-	var entries []Profile
+	// The wire shape permits absent resource fields. The persisted Profile
+	// retains its original numeric encoding, including explicit zero values.
+	var entries []struct {
+		Profile
+		CPURequestMillis   *int64 `json:"cpu_request_millis,omitempty"`
+		CPULimitMillis     *int64 `json:"cpu_limit_millis,omitempty"`
+		MemoryRequestBytes *int64 `json:"memory_request_bytes,omitempty"`
+		MemoryLimitBytes   *int64 `json:"memory_limit_bytes,omitempty"`
+	}
 	if strictjson.Decode(reader, 1<<20, &entries) != nil || len(entries) == 0 || len(entries) > 128 {
 		return nil, ErrInvalid
 	}
 	result := map[string]Profile{}
-	for _, p := range entries {
+	for _, entry := range entries {
+		p := entry.Profile
+		for _, field := range []struct {
+			target *int64
+			value  *int64
+		}{
+			{&p.CPURequestMillis, entry.CPURequestMillis}, {&p.CPULimitMillis, entry.CPULimitMillis},
+			{&p.MemoryRequestBytes, entry.MemoryRequestBytes}, {&p.MemoryLimitBytes, entry.MemoryLimitBytes},
+		} {
+			if field.value != nil {
+				*field.target = *field.value
+			}
+		}
 		if !p.Valid() {
 			return nil, ErrInvalid
 		}
