@@ -17,7 +17,8 @@ var ErrConflict = errors.New("INSTANCE_OPERATION_CONFLICT")
 var ErrDenied = errors.New("INSTANCE_INSTALLATION_DENIED")
 
 // Journal has no HTTP surface. Authorize must check the current Core manager and
-// exact installed App/version on EVERY call, including replay. No cached grant.
+// installed App and worker compatibility on EVERY call, including replay.
+// The returned revision is a fresh grant; old journal revisions are history.
 type Journal struct {
 	Pool      *pgxpool.Pool
 	Client    kubernetes.Interface
@@ -76,19 +77,20 @@ func scanRecord(row pgx.Row) (StartRecord, error) {
 }
 
 func sameRecord(r StartRecord, in Run, p Profile, revision int64) bool {
-	return r.Run == in && r.ProfileHash == p.Hash() && r.InstallationRevision == revision && validVolume(in.Identity, p, r.Volume)
+	return r.Run == in && r.ProfileHash == p.Hash() && r.InstallationRevision > 0 && r.InstallationRevision <= revision && validVolume(in.Identity, p, r.Volume)
 }
 
 // Authorize is followed by an installation row check in the acceptance transaction
-// so a removed, replaced, or upgraded installation cannot receive a new binding.
+// so removal or a revision change after authorization cannot receive a binding.
+// Core has already authorized this worker version for that exact revision.
 type rowQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func installationMatches(ctx context.Context, tx rowQuerier, in Run, p Profile, revision int64) error {
 	var ok bool
-	if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.app_installations WHERE installation_id=$1 AND station_id=$2 AND organization_id=$3 AND app_id=$4 AND app_version=$5 AND state='installed' AND revision=$6)`,
-		in.InstallationID, in.StationID, in.OrganizationID, p.AppID, p.AppVersion, revision).Scan(&ok); e != nil {
+	if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.app_installations WHERE installation_id=$1 AND station_id=$2 AND organization_id=$3 AND app_id=$4 AND state='installed' AND revision=$5)`,
+		in.InstallationID, in.StationID, in.OrganizationID, p.AppID, revision).Scan(&ok); e != nil {
 		return e
 	}
 	if revision < 1 || !ok {

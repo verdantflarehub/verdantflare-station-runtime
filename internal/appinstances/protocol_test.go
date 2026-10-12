@@ -35,15 +35,15 @@ func TestCoreAuthorityUsesExactResponseAndReauthorizesReplay(t *testing.T) {
 	a := &CoreAuthority{origin: "http://core.station-test.svc.cluster.local:8080", appID: p.AppID, token: strings.Repeat("c", 40)}
 	a.client = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
-		if r.URL.String() != a.origin+"/internal/v1/app-installations/authorize" || r.Method != "POST" || r.Header.Get("Authorization") != "Bearer "+a.token ||
+		if r.URL.String() != a.origin+"/internal/v1/app-installations/authorize-worker" || r.Method != "POST" || r.Header.Get("Authorization") != "Bearer "+a.token ||
 			r.Header.Get("X-User-Id") != in.UserID || r.Header.Get("X-Organization-Id") != in.OrganizationID || r.Header.Get("X-Station-Id") != in.StationID {
 			t.Fatal("incorrect authorization request")
 		}
 		var body map[string]string
-		if json.NewDecoder(r.Body).Decode(&body) != nil || len(body) != 2 || body["installation_id"] != in.InstallationID || body["app_version"] != p.AppVersion {
+		if json.NewDecoder(r.Body).Decode(&body) != nil || len(body) != 2 || body["installation_id"] != in.InstallationID || body["worker_version"] != p.AppVersion {
 			t.Fatal("unexpected authority payload")
 		}
-		value := map[string]any{"schema_version": 1, "installation_id": in.InstallationID, "app_id": p.AppID, "app_version": p.AppVersion,
+		value := map[string]any{"schema_version": 1, "installation_id": in.InstallationID, "app_id": p.AppID, "app_version": "9.0.0", "worker_version": p.AppVersion,
 			"station_id": in.StationID, "organization_id": in.OrganizationID, "user_id": in.UserID, "request_id": r.Header.Get("X-Request-Id"), "installation_revision": 7}
 		if mutate != nil {
 			mutate(value)
@@ -60,7 +60,7 @@ func TestCoreAuthorityUsesExactResponseAndReauthorizesReplay(t *testing.T) {
 	if calls != 2 {
 		t.Fatal("authorization cached")
 	}
-	for _, field := range []string{"installation_id", "station_id", "organization_id", "user_id", "request_id", "app_id", "app_version"} {
+	for _, field := range []string{"installation_id", "station_id", "organization_id", "user_id", "request_id", "app_id", "app_version", "worker_version"} {
 		mutate = func(v map[string]any) { v[field] = "wrong" }
 		if _, e := a.Check(context.Background(), in, p); !errors.Is(e, ErrDenied) {
 			t.Fatal("mismatched authority projection accepted", field, e)

@@ -73,8 +73,8 @@ func (a *CoreAuthority) Check(ctx context.Context, in Run, p Profile) (int64, er
 	if e != nil {
 		return 0, ErrUnavailable
 	}
-	body, _ := json.Marshal(map[string]string{"installation_id": in.InstallationID, "app_version": p.AppVersion})
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, a.origin+"/internal/v1/app-installations/authorize", bytes.NewReader(body))
+	body, _ := json.Marshal(map[string]string{"installation_id": in.InstallationID, "worker_version": p.AppVersion})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, a.origin+"/internal/v1/app-installations/authorize-worker", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+a.token)
 	req.Header.Set("X-User-Id", in.UserID)
@@ -98,6 +98,7 @@ func (a *CoreAuthority) Check(ctx context.Context, in Run, p Profile) (int64, er
 		InstallationID       string `json:"installation_id"`
 		AppID                string `json:"app_id"`
 		AppVersion           string `json:"app_version"`
+		WorkerVersion        string `json:"worker_version"`
 		StationID            string `json:"station_id"`
 		OrganizationID       string `json:"organization_id"`
 		UserID               string `json:"user_id"`
@@ -105,7 +106,8 @@ func (a *CoreAuthority) Check(ctx context.Context, in Run, p Profile) (int64, er
 		RequestID            string `json:"request_id"`
 	}
 	if strictjson.Decode(resp.Body, 16<<10, &result) != nil || result.SchemaVersion != 1 || result.InstallationRevision < 1 ||
-		result.InstallationID != in.InstallationID || result.AppID != a.appID || result.AppVersion != p.AppVersion ||
+		result.InstallationID != in.InstallationID || result.AppID != a.appID || result.WorkerVersion != p.AppVersion ||
+		!regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`).MatchString(result.AppVersion) ||
 		result.StationID != in.StationID || result.OrganizationID != in.OrganizationID || result.UserID != in.UserID || result.RequestID != rid.String() {
 		return 0, ErrDenied
 	}
