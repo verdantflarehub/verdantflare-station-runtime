@@ -1,0 +1,444 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "station://contracts/v1/app-state-collector",
+  "title": "Core application observation stream v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/upstream"
+    },
+    {
+      "$ref": "#/$defs/downstream"
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f-]{36}$"
+    },
+    "positive": {
+      "type": "string",
+      "pattern": "^[1-9][0-9]*$",
+      "maxLength": 19
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "name",
+        "uid",
+        "resourceVersion",
+        "stationId",
+        "organizationId",
+        "installationId",
+        "appId",
+        "generation",
+        "observedGeneration",
+        "desired",
+        "replicas",
+        "ready",
+        "updated",
+        "available",
+        "progressFailed",
+        "replicaFailed",
+        "terminating",
+        "deleted",
+        "health",
+        "instanceId"
+      ],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "resourceVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "stationId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "organizationId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "installationId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "appId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "observedGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "desired": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "replicas": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "ready": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "updated": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "available": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "progressFailed": {
+          "type": "boolean"
+        },
+        "replicaFailed": {
+          "type": "boolean"
+        },
+        "terminating": {
+          "type": "boolean"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "health": {
+          "type": "string",
+          "enum": [
+            "not_checked",
+            "ready",
+            "failed"
+          ]
+        },
+        "instanceId": {
+          "type": "string",
+          "maxLength": 128
+        }
+      }
+    },
+    "snapshot-begin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "syncId"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "snapshot-begin"
+        },
+        "syncId": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "snapshot-objects": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "syncId",
+        "objects"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "snapshot-objects"
+        },
+        "syncId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "objects": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 500,
+          "items": {
+            "$ref": "#/$defs/resource"
+          }
+        }
+      }
+    },
+    "snapshot-end": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "syncId",
+        "totalCount"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "snapshot-end"
+        },
+        "syncId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "totalCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        }
+      }
+    },
+    "upsert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "object"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "upsert"
+        },
+        "object": {
+          "$ref": "#/$defs/resource"
+        }
+      }
+    },
+    "delete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "namespace",
+        "name",
+        "uid"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "delete"
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "heartbeat"
+        }
+      }
+    },
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "coreBootId",
+        "sessionId",
+        "heartbeatSeconds",
+        "observationTTLSeconds"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "hello"
+        },
+        "coreBootId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sessionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "heartbeatSeconds": {
+          "type": "integer",
+          "const": 10
+        },
+        "observationTTLSeconds": {
+          "type": "integer",
+          "const": 30
+        }
+      }
+    },
+    "ping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "ping"
+        }
+      }
+    },
+    "resync": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "resync"
+        }
+      }
+    },
+    "closing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "reasonCode"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "type": "integer",
+          "const": 1
+        },
+        "kind": {
+          "type": "string",
+          "const": "closing"
+        },
+        "reasonCode": {
+          "type": "string",
+          "enum": [
+            "INVALID_ARGUMENT",
+            "RESYNC_REQUIRED",
+            "STREAM_TIMEOUT",
+            "SERVICE_UNAVAILABLE"
+          ]
+        }
+      }
+    },
+    "upstream": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/snapshot-begin"
+        },
+        {
+          "$ref": "#/$defs/snapshot-objects"
+        },
+        {
+          "$ref": "#/$defs/snapshot-end"
+        },
+        {
+          "$ref": "#/$defs/upsert"
+        },
+        {
+          "$ref": "#/$defs/delete"
+        },
+        {
+          "$ref": "#/$defs/heartbeat"
+        }
+      ]
+    },
+    "downstream": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/hello"
+        },
+        {
+          "$ref": "#/$defs/ping"
+        },
+        {
+          "$ref": "#/$defs/resync"
+        },
+        {
+          "$ref": "#/$defs/closing"
+        }
+      ]
+    }
+  }
+}

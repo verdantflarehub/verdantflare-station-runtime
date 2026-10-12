@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/appinstances"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/appstate"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
@@ -59,6 +60,20 @@ func run() int {
 		return 1
 	}
 	defer pool.Close()
+	stateConfig, err := appstate.LoadConfig(os.Getenv("STATION_APP_STATE_OBSERVER_CONFIG"), os.Getenv, []string{os.Getenv("STATION_APP_TRANSITION_CONTROL_TOKEN"), os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")})
+	if err != nil {
+		logger.Error("invalid_app_state_observer_configuration")
+		return 1
+	}
+	var stateObserver *appstate.Observer
+	if stateConfig != nil {
+		watchClient, e := appstate.NewKubernetes(os.Getenv("STATION_KUBECONFIG"), os.Getenv("STATION_KUBE_CONTEXT"))
+		if e != nil {
+			logger.Error("invalid_app_state_watch_configuration")
+			return 1
+		}
+		stateObserver = &appstate.Observer{Client: watchClient, Core: stateConfig.Core, Namespaces: stateConfig.Namespaces}
+	}
 	transitionToken := os.Getenv("STATION_APP_TRANSITION_CONTROL_TOKEN")
 	maintenance, err := executor.LoadManagementMaintenance(os.Getenv("STATION_APP_TRANSITION_MAINTENANCE_REGISTRY"), transitionToken, os.Getenv, driver, targets)
 	if err != nil || (maintenance != nil && transitionToken == os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")) {
@@ -153,6 +168,7 @@ func run() int {
 				return errors.New("transition migrations not ready")
 			}
 		}
+
 		return nil
 	}
 	check, stop := context.WithTimeout(ctx, 5*time.Second)
@@ -230,6 +246,17 @@ func run() int {
 		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}}
 		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- instanceServer.ListenAndServe() }()
+	}
+	if stateObserver != nil {
+		observeCtx, stopObserver := context.WithCancel(ctx)
+		observerDone := make(chan struct{})
+		go func() {
+			defer close(observerDone)
+			if stateObserver.Run(observeCtx, logger) != nil && observeCtx.Err() == nil {
+				logger.Error("app_state_observer_stopped")
+			}
+		}()
+		defer func() { stopObserver(); <-observerDone }()
 	}
 	go func() { done <- server.Serve(lis) }()
 	go func() { done <- probe.ListenAndServe() }()
