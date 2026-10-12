@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -19,9 +20,10 @@ import (
 )
 
 type Observer struct {
-	Client     kubernetes.Interface
-	Core       Reporter
-	Namespaces []string
+	Client        kubernetes.Interface
+	Core          Reporter
+	Namespaces    []string
+	HealthTargets []HealthTarget
 }
 
 func observation(d *appsv1.Deployment, deleted bool) ResourceObservation {
@@ -199,6 +201,15 @@ func (o *Observer) watch(ctx context.Context, versions map[string]string) (<-cha
 }
 
 func (o *Observer) Session(ctx context.Context) error {
+	healthClient := newHealthClient()
+	defer healthClient.CloseIdleConnections()
+	return o.session(ctx, healthClient)
+}
+
+func (o *Observer) session(ctx context.Context, healthClient *http.Client) error {
+	if !validHealthTargets(o.HealthTargets, o.Namespaces) {
+		return ErrInvalid
+	}
 	stream, err := o.Core.Open(ctx)
 	if err != nil {
 		return err
@@ -225,6 +236,7 @@ func (o *Observer) Session(ctx context.Context) error {
 			return err
 		}
 		timer := time.NewTimer(time.Until(listedAt.Add(60 * time.Second)))
+		health := startHealthRound(ctx, o.HealthTargets, resources, healthClient)
 		heartbeat := time.NewTicker(10 * time.Second)
 		resync := false
 		var result error
@@ -267,15 +279,21 @@ func (o *Observer) Session(ctx context.Context) error {
 				}
 			case update := <-updates:
 				fact := update.Object
+				health.update(fact)
 				if fact.Deleted {
 					result = stream.Send(Delete{1, "delete", fact.Namespace, fact.Name, fact.UID})
 				} else {
 					result = stream.Send(Upsert{1, "upsert", fact})
 				}
+			case sample := <-health.results:
+				if health.current(sample) {
+					result = stream.Send(sample.frame)
+				}
 			}
 		}
 		timer.Stop()
 		heartbeat.Stop()
+		health.stop()
 		stop()
 		if result != nil {
 			return result

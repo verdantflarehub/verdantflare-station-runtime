@@ -91,6 +91,16 @@ type Heartbeat struct {
 	Kind          string `json:"kind"`
 }
 
+type Health struct {
+	SchemaVersion   int    `json:"schemaVersion"`
+	Kind            string `json:"kind"`
+	Namespace       string `json:"namespace"`
+	Name            string `json:"name"`
+	UID             string `json:"uid"`
+	ResourceVersion string `json:"resourceVersion"`
+	Health          string `json:"health"`
+}
+
 type Hello struct {
 	SchemaVersion         int    `json:"schemaVersion"`
 	Kind                  string `json:"kind"`

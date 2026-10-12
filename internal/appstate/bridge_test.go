@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,14 +25,18 @@ import (
 )
 
 func TestStateObserverCrossProcessCore(t *testing.T) {
-	testObserverCoreStream(t, false)
+	testObserverCoreStream(t, false, false)
 }
 
 func TestStateObserverCalibrationOnSameStream(t *testing.T) {
-	testObserverCoreStream(t, true)
+	testObserverCoreStream(t, true, false)
 }
 
-func testObserverCoreStream(t *testing.T, calibrate bool) {
+func TestStateObserverHealthCrossProcessCore(t *testing.T) {
+	testObserverCoreStream(t, false, true)
+}
+
+func testObserverCoreStream(t *testing.T, calibrate, health bool) {
 	t.Helper()
 	binary := os.Getenv("STATION_APP_STATE_CORE_TEST_BINARY")
 	if binary == "" {
@@ -39,11 +46,17 @@ func testObserverCoreStream(t *testing.T, calibrate bool) {
 	if calibrate {
 		duration = 85 * time.Second
 	}
+	if health {
+		duration = 45 * time.Second
+	}
 	ctx, cancel := context.WithTimeout(t.Context(), duration)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "bridge.json")
 	cmd := exec.CommandContext(ctx, binary, "-test.run=^TestCollectorBridge$", "-test.v", "-test.timeout=90s")
 	cmd.Env = append(os.Environ(), "STATION_APP_STATE_BRIDGE_CONFIG="+path)
+	if health {
+		cmd.Env = append(cmd.Env, "STATION_APP_STATE_BRIDGE_HEALTH=1")
+	}
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
@@ -98,11 +111,39 @@ func testObserverCoreStream(t *testing.T, calibrate bool) {
 		started <- stream
 		return true, stream, nil
 	})
-	observer := Observer{kube, core, []string{"apps"}}
+	observer := Observer{Client: kube, Core: core, Namespaces: []string{"apps"}}
+	var probeStatus atomic.Int32
+	probeStatus.Store(200)
+	healthClient := newHealthClient()
+	defer healthClient.CloseIdleConnections()
+	if health {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/health" || r.Method != "GET" || r.Header.Get("Authorization") != "" {
+				t.Error("unexpected health request")
+			}
+			w.WriteHeader(int(probeStatus.Load()))
+		}))
+		defer server.Close()
+		// Real TCP/HTTP to an isolated 5090 fixture, preserving the configured
+		// Service URL and production redirect/proxy/timeout behavior.
+		healthClient.Transport.(*http.Transport).DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr != "manager.apps.svc:8091" {
+				t.Error("unexpected probe host")
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+		}
+		observer.HealthTargets = []HealthTarget{{Namespace: o.Namespace, WorkloadName: o.Name, WorkloadUID: o.UID, ServiceName: "manager", Port: 8091, Path: "/health"}}
+	}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	done := make(chan error, 1)
-	go func() { done <- observer.Run(runCtx, nil) }()
+	go func() {
+		if health {
+			done <- observer.session(runCtx, healthClient)
+		} else {
+			done <- observer.Run(runCtx, nil)
+		}
+	}()
 	readState := func(wanted string) {
 		t.Helper()
 		for {
@@ -133,6 +174,13 @@ func testObserverCoreStream(t *testing.T, calibrate bool) {
 		t.Fatal("observer did not reach Watch")
 	}
 	readState("ready")
+	if health {
+		probeStatus.Store(503)
+		readState("degraded")
+		probeStatus.Store(200)
+		readState("ready")
+		t.Log("real HTTP health 200 -> 503 -> 200 crossed Runtime stream and independent Core process")
+	}
 	if calibrate {
 		readSession := func() string {
 			t.Helper()

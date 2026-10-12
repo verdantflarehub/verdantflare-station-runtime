@@ -535,6 +535,15 @@
       "schemaVersion": 1,
       "kind": "closing",
       "reasonCode": "RESYNC_REQUIRED"
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "health",
+      "namespace": "apps",
+      "name": "fixture-app",
+      "uid": "0198abcd-1234-7000-8000-000000000001",
+      "resourceVersion": "opaque:rv",
+      "health": "ready"
     }
   ]
 }

@@ -72,7 +72,7 @@ func run() int {
 			logger.Error("invalid_app_state_watch_configuration")
 			return 1
 		}
-		stateObserver = &appstate.Observer{Client: watchClient, Core: stateConfig.Core, Namespaces: stateConfig.Namespaces}
+		stateObserver = &appstate.Observer{Client: watchClient, Core: stateConfig.Core, Namespaces: stateConfig.Namespaces, HealthTargets: stateConfig.HealthTargets}
 	}
 	transitionToken := os.Getenv("STATION_APP_TRANSITION_CONTROL_TOKEN")
 	maintenance, err := executor.LoadManagementMaintenance(os.Getenv("STATION_APP_TRANSITION_MAINTENANCE_REGISTRY"), transitionToken, os.Getenv, driver, targets)

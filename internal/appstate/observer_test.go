@@ -106,7 +106,7 @@ func TestStateObserverListWatchAndCancellation(t *testing.T) {
 		return true, stream, nil
 	})
 	core := &recordingCore{reports: make(chan recordedFrame, 32)}
-	o := &Observer{client, core, []string{"apps"}}
+	o := &Observer{Client: client, Core: core, Namespaces: []string{"apps"}}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
@@ -167,7 +167,7 @@ func TestStateObserverRejectsPartialListsAndStopsOnProtocolError(t *testing.T) {
 		return true, nil, errors.New("list denied")
 	})
 	core := &recordingCore{reports: make(chan recordedFrame, 32)}
-	o := &Observer{client, core, []string{"apps", "unavailable"}}
+	o := &Observer{Client: client, Core: core, Namespaces: []string{"apps", "unavailable"}}
 	if err := o.Session(t.Context()); !errors.Is(err, ErrUnavailable) {
 		t.Fatal("partial list accepted", err)
 	}
@@ -203,7 +203,7 @@ func TestStateObserverExpiredWatchRelists(t *testing.T) {
 		return true, s, nil
 	})
 	core := &recordingCore{reports: make(chan recordedFrame, 32)}
-	o := &Observer{client, core, []string{"apps"}}
+	o := &Observer{Client: client, Core: core, Namespaces: []string{"apps"}}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)

@@ -13,8 +13,9 @@ import (
 )
 
 type Config struct {
-	Namespaces []string
-	Core       *Client
+	Namespaces    []string
+	Core          *Client
+	HealthTargets []HealthTarget
 }
 
 func LoadConfig(path string, lookup func(string) string, otherTokens []string) (*Config, error) {
@@ -30,10 +31,11 @@ func LoadConfig(path string, lookup func(string) string, otherTokens []string) (
 	}
 	defer f.Close()
 	var input struct {
-		SchemaVersion int      `json:"schemaVersion"`
-		Namespaces    []string `json:"namespaces"`
-		CoreOrigin    string   `json:"coreOrigin"`
-		TokenEnv      string   `json:"tokenEnv"`
+		SchemaVersion int            `json:"schemaVersion"`
+		Namespaces    []string       `json:"namespaces"`
+		CoreOrigin    string         `json:"coreOrigin"`
+		TokenEnv      string         `json:"tokenEnv"`
+		HealthTargets []HealthTarget `json:"healthTargets,omitempty"`
 	}
 	if strictjson.Decode(f, 65536, &input) != nil || input.SchemaVersion != 1 || len(input.Namespaces) == 0 || len(input.Namespaces) > 128 || !regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`).MatchString(input.TokenEnv) {
 		return nil, ErrInvalid
@@ -54,7 +56,10 @@ func LoadConfig(path string, lookup func(string) string, otherTokens []string) (
 		return nil, err
 	}
 	slices.Sort(input.Namespaces)
-	return &Config{input.Namespaces, client}, nil
+	if !validHealthTargets(input.HealthTargets, input.Namespaces) {
+		return nil, ErrInvalid
+	}
+	return &Config{Namespaces: input.Namespaces, Core: client, HealthTargets: input.HealthTargets}, nil
 }
 
 // Watch uses a separate client with per-call contexts; the executor's short

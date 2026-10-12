@@ -424,6 +424,9 @@
         },
         {
           "$ref": "#/$defs/heartbeat"
+        },
+        {
+          "$ref": "#/$defs/health"
         }
       ]
     },
@@ -568,6 +571,54 @@
           }
         }
       ]
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "namespace",
+        "name",
+        "uid",
+        "resourceVersion",
+        "health"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": 1
+        },
+        "kind": {
+          "const": "health"
+        },
+        "namespace": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+          "maxLength": 253
+        },
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "resourceVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "health": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "failed"
+          ]
+        }
+      }
     }
   }
 }
