@@ -56,11 +56,25 @@ type WorkerObservation struct {
 }
 
 func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string, source WorkerSource) (*corev1.Pod, *corev1.Service, error) {
+	pod, svc, err := legacyWorkerObjects(in, p, b, startID, source)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Service identity remains compatible with durable operations and existing
+	// Services. Only the Pod carries the new execution template and spec hash.
+	pod = pod.DeepCopy()
+	pod.Spec.Containers[0].Resources = workerResources()
+	pod.Annotations["station.verdantflare.com/worker-template"] = workerTemplateVersion
+	setPodSpecHash(pod, workerHashKey)
+	return pod, svc, nil
+}
+
+func legacyWorkerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string, source WorkerSource) (*corev1.Pod, *corev1.Service, error) {
 	id, err := uuid.Parse(startID)
 	if err != nil || id == uuid.Nil || id.String() != startID || startID == in.CreateOperationID || !source.valid(p.MaxFileBytes) {
 		return nil, nil, ErrInvalid
 	}
-	pod, svc, err := helperObjects(in, p, b)
+	pod, svc, err := legacyHelperObjects(in, p, b)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -70,7 +84,7 @@ func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string
 	pod.Labels[startKey] = startID
 	pod.Annotations[startKey] = startID
 	delete(pod.Annotations, helperHashKey)
-	pod.Annotations["station.verdantflare.com/worker-template"] = workerTemplateVersion
+	pod.Annotations["station.verdantflare.com/worker-template"] = legacyWorkerTemplateVersion
 	no, yes := false, true
 	grace := int64(45)
 	priority := int32(0)
@@ -86,7 +100,7 @@ func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string
 		corev1.Volume{Name: "shm", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: &shmSize}}})
 	c := &pod.Spec.Containers[0]
 	c.Name, c.Command = "blender", nil
-	c.Resources = workerResources()
+	c.Resources = legacyWorkerResources()
 	// The approved KDE image uses bounded sudo during DBus/runtime setup.
 	c.SecurityContext = &corev1.SecurityContext{Privileged: &no, AllowPrivilegeEscalation: &yes}
 	c.Env = []corev1.EnvVar{
@@ -119,6 +133,12 @@ func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string
 }
 
 func workerPodMatches(actual, desired *corev1.Pod, uid string) bool {
+	if actual.Annotations["station.verdantflare.com/worker-template"] == legacyWorkerTemplateVersion {
+		desired = desired.DeepCopy()
+		desired.Spec.Containers[0].Resources = legacyWorkerResources()
+		desired.Annotations["station.verdantflare.com/worker-template"] = legacyWorkerTemplateVersion
+		setPodSpecHash(desired, workerHashKey)
+	}
 	actual = withProbeDefaults(actual)
 	desired = withProbeDefaults(desired)
 	if !ownedHelper(actual, desired, uid) || actual.Spec.HostNetwork || actual.Spec.HostPID || actual.Spec.HostIPC ||

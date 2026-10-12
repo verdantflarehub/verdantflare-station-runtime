@@ -58,8 +58,8 @@ func TestPreparerHasNoGPUAndRemovalWaitsForObservedExit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pod.Spec.Containers) != 1 || len(pod.Spec.Containers[0].Resources.Requests) != 2 || len(pod.Spec.Containers[0].Resources.Limits) != 2 || pod.Spec.Containers[0].Command[0] != "python3" {
-		t.Fatal("preparer requested more than file-agent CPU/memory")
+	if len(pod.Spec.Containers) != 1 || len(pod.Spec.Containers[0].Resources.Requests) != 0 || len(pod.Spec.Containers[0].Resources.Limits) != 0 || pod.Spec.Containers[0].Command[0] != "python3" {
+		t.Fatal("preparer must omit CPU, memory and GPU declarations")
 	}
 	if pod.Spec.AutomountServiceAccountToken == nil || *pod.Spec.AutomountServiceAccountToken || pod.Spec.HostNetwork {
 		t.Fatal("unexpected host or cluster access")
@@ -114,7 +114,9 @@ func TestPreparerRefusesReplacedPodsAndSpecificationDrift(t *testing.T) {
 		{"uid", func(p *corev1.Pod) { p.UID = types.UID(uuid.NewString()) }},
 		{"image", func(p *corev1.Pod) { p.Spec.Containers[0].Image = "registry.example.test/other:v1.0.0" }},
 		{"host", func(p *corev1.Pod) { p.Spec.HostNetwork = true }},
-		{"gpu", func(p *corev1.Pod) { p.Spec.Containers[0].Resources.Limits["nvidia.com/gpu"] = resource.MustParse("1") }},
+		{"gpu", func(p *corev1.Pod) {
+			p.Spec.Containers[0].Resources.Limits = corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("1")}
+		}},
 		{"foreign-org", func(p *corev1.Pod) { p.Annotations[organizationKey] = uuid.NewString() }},
 		{"privileged", func(p *corev1.Pod) { yes := true; p.Spec.Containers[0].SecurityContext.Privileged = &yes }},
 		{"capabilities", func(p *corev1.Pod) {

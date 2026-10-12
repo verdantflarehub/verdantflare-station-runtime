@@ -22,6 +22,7 @@ import (
 
 const helperHashKey = "station.verdantflare.com/preparer-hash"
 const componentKey = "app.kubernetes.io/component"
+const preparerTemplateKey = "station.verdantflare.com/preparer-template"
 
 // HelperProfile is trusted configuration. The image is the registered Blender
 // worker image, but its desktop/GPU entrypoint is deliberately not executed.
@@ -43,6 +44,28 @@ var imageVersion = regexp.MustCompile(`^[^\s@]+:(?:[a-z0-9][a-z0-9._-]*-)?v?[0-9
 func instanceName(in Identity) string { return "blender-" + strings.ReplaceAll(in.InstanceID, "-", "") }
 
 func helperObjects(in Identity, p HelperProfile, b VolumeBinding) (*corev1.Pod, *corev1.Service, error) {
+	pod, svc, err := legacyHelperObjects(in, p, b)
+	if err != nil {
+		return nil, nil, err
+	}
+	pod = pod.DeepCopy()
+	pod.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
+	pod.Annotations[preparerTemplateKey] = "blender-preparer-v2"
+	setPodSpecHash(pod, helperHashKey)
+	return pod, svc, nil
+}
+
+func legacyHelperResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("512Mi")}}
+}
+
+func setPodSpecHash(pod *corev1.Pod, key string) {
+	raw, _ := json.Marshal(pod.Spec)
+	hash := sha256.Sum256(raw)
+	pod.Annotations[key] = hex.EncodeToString(hash[:])
+}
+
+func legacyHelperObjects(in Identity, p HelperProfile, b VolumeBinding) (*corev1.Pod, *corev1.Service, error) {
 	if !validIdentity(in) || !p.StorageProfile.valid() || !sameReservation(b, in, p.StorageProfile) || b.Retained || !imageVersion.MatchString(p.Image) || p.MaxFileBytes < 1 || p.MaxFileBytes > b.ReservedBytes {
 		return nil, nil, ErrInvalid
 	}
@@ -62,7 +85,7 @@ func helperObjects(in Identity, p HelperProfile, b VolumeBinding) (*corev1.Pod, 
 		Containers: []corev1.Container{{Name: "files", Image: p.Image, ImagePullPolicy: corev1.PullAlways, Command: []string{"python3", "/opt/beagle/blender-mcp/file-agent/server.py"},
 			Env:             []corev1.EnvVar{{Name: "INSTANCE_ID", Value: in.InstanceID}, {Name: "WORKSPACE_ROOT", Value: "/workspace"}, {Name: "BLENDER_FILE_AGENT_HOST", Value: "0.0.0.0"}, {Name: "BLENDER_MCP_TOKEN_FILE", Value: "/secrets/token"}, {Name: "BLENDER_FILE_MAX_BODY_BYTES", Value: fmt.Sprint(p.MaxFileBytes)}, {Name: "PYTHONDONTWRITEBYTECODE", Value: "1"}, {Name: "NVIDIA_VISIBLE_DEVICES", Value: "void"}},
 			Ports:           []corev1.ContainerPort{{Name: "files", ContainerPort: 48085}},
-			Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("128Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("512Mi")}},
+			Resources:       legacyHelperResources(),
 			SecurityContext: &corev1.SecurityContext{Privileged: &no, AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes, Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 			VolumeMounts:    []corev1.VolumeMount{{Name: "data", MountPath: "/workspace", SubPath: "workspace"}, {Name: "auth", MountPath: "/secrets", ReadOnly: true}},
 			ReadinessProbe:  &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromString("files")}}, PeriodSeconds: 3, TimeoutSeconds: 2},
@@ -95,6 +118,12 @@ func ownedHelper(actual, desired metav1.Object, uid string) bool {
 }
 
 func helperPodMatches(actual, desired *corev1.Pod, uid string) bool {
+	if actual.Annotations[preparerTemplateKey] == "" {
+		desired = desired.DeepCopy()
+		desired.Spec.Containers[0].Resources = legacyHelperResources()
+		delete(desired.Annotations, preparerTemplateKey)
+		setPodSpecHash(desired, helperHashKey)
+	}
 	actual = withProbeDefaults(actual)
 	desired = withProbeDefaults(desired)
 	return ownedHelper(actual, desired, uid) && !actual.Spec.HostNetwork && !actual.Spec.HostPID && !actual.Spec.HostIPC &&

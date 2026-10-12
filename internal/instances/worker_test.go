@@ -56,10 +56,13 @@ func TestComputeAdmissionRequiresHealthyExclusiveNodeAndKnownCapacity(t *testing
 		{"missing-sharing-evidence", func(n *corev1.Node) { delete(n.Labels, "nvidia.com/gpu.sharing-strategy") }, ErrComputeUnknown},
 		{"time-slicing", func(n *corev1.Node) { n.Labels["nvidia.com/gpu.sharing-strategy"] = "time-slicing" }, ErrComputeUnknown},
 		{"replicas", func(n *corev1.Node) { n.Labels["nvidia.com/gpu.replicas"] = "2" }, ErrComputeUnknown},
-		{"cpu", func(n *corev1.Node) { n.Status.Allocatable[corev1.ResourceCPU] = resource.MustParse("1999m") }, ErrComputeCapacity},
-		{"memory", func(n *corev1.Node) { n.Status.Allocatable[corev1.ResourceMemory] = resource.MustParse("3Gi") }, ErrComputeCapacity},
+		{"cpu-not-required", func(n *corev1.Node) { n.Status.Allocatable[corev1.ResourceCPU] = resource.MustParse("0") }, nil},
+		{"memory-not-required", func(n *corev1.Node) { n.Status.Allocatable[corev1.ResourceMemory] = resource.MustParse("0") }, nil},
 		{"zero-gpu", func(n *corev1.Node) { n.Status.Allocatable[gpuResource] = resource.MustParse("0") }, ErrComputeCapacity},
-		{"unknown", func(n *corev1.Node) { delete(n.Status.Allocatable, corev1.ResourceMemory) }, ErrComputeUnknown},
+		{"unknown", func(n *corev1.Node) { delete(n.Status.Allocatable, gpuResource) }, ErrComputeUnknown},
+		{"memory-pressure", func(n *corev1.Node) {
+			n.Status.Conditions = append(n.Status.Conditions, corev1.NodeCondition{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionTrue})
+		}, ErrComputeCapacity},
 		{"cordon", func(n *corev1.Node) { n.Spec.Unschedulable = true }, ErrComputeCapacity},
 		{"not-ready", func(n *corev1.Node) { n.Status.Conditions[0].Status = corev1.ConditionUnknown }, ErrComputeCapacity},
 		{"taint", func(n *corev1.Node) {

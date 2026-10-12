@@ -38,7 +38,7 @@ func LoadProfiles(path string) (map[string]HelperProfile, error) {
 		raw, _ := json.Marshal(struct {
 			Config   profileConfig `json:"config"`
 			Template string        `json:"worker_template"`
-		}{entry, workerTemplateVersion})
+		}{entry, legacyWorkerTemplateVersion})
 		p := HelperProfile{StorageProfile: StorageProfile{ID: entry.ID, Namespace: entry.Namespace, Pool: entry.Pool, NodeName: entry.NodeName, Claims: entry.Claims, Bytes: entry.StorageBytes, Hash: sha256.Sum256(raw)}, Image: entry.Image, MaxFileBytes: entry.MaxFileBytes}
 		if !p.StorageProfile.valid() || !imageVersion.MatchString(p.Image) || p.MaxFileBytes < 1 || p.MaxFileBytes > p.Bytes {
 			return nil, ErrInvalid

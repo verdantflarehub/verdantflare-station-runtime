@@ -13,15 +13,25 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const workerTemplateVersion = "blender-desktop-v1"
+// The legacy profile identity is persisted by workspace and execution records.
+// Keep its encoding frozen; execution templates have independent versions.
+const legacyWorkerTemplateVersion = "blender-desktop-v1"
+const workerTemplateVersion = "blender-desktop-v2"
 const gpuResource corev1.ResourceName = "nvidia.com/gpu"
 
 var ErrComputeCapacity = errors.New("COMPUTE_CAPACITY_UNAVAILABLE")
 var ErrComputeUnknown = errors.New("COMPUTE_CAPACITY_UNKNOWN")
 
-// These are the approved initial desktop profile, not client supplied requests.
-// A template change must change workerTemplateVersion and the registry hash.
+// New workers do not reserve or limit CPU/memory. GPU access remains explicit.
 func workerResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{gpuResource: resource.MustParse("1")},
+		Limits:   corev1.ResourceList{gpuResource: resource.MustParse("1")},
+	}
+}
+
+// Read compatibility only: reproduce the exact previously approved template.
+func legacyWorkerResources() corev1.ResourceRequirements {
 	return corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi"), gpuResource: resource.MustParse("1")},
 		Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("8"), corev1.ResourceMemory: resource.MustParse("16Gi"), gpuResource: resource.MustParse("1")},

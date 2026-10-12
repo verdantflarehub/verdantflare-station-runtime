@@ -115,8 +115,20 @@ func TestStartPersistsBeforeEffectsAndNeedsAuthenticatedLoad(t *testing.T) {
 	}
 	changed := in
 	changed.OperationID = uuid.NewString()
-	if _, err = s.Start(ctx, changed); !errors.Is(err, ErrConflict) {
+	// Recovery accepts only the exact failed worker; a live worker is a
+	// binding conflict and must never create a second execution or workload.
+	client.ClearActions()
+	if _, err = s.Start(ctx, changed); !errors.Is(err, ErrBinding) {
 		t.Fatal("second start without completed stop", err)
+	}
+	for _, action := range client.Actions() {
+		if action.GetVerb() != "get" && action.GetVerb() != "list" {
+			t.Fatal("rejected second start mutated workloads")
+		}
+	}
+	var count int
+	if err = s.Pool.QueryRow(ctx, `SELECT count(*) FROM station.runtime_instance_executions WHERE operation_id=$1`, changed.OperationID).Scan(&count); err != nil || count != 0 {
+		t.Fatal("rejected second start persisted", count, err)
 	}
 	changed = in
 	changed.UserID = uuid.NewString()
