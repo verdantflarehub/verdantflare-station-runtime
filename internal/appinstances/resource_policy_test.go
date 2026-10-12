@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -44,6 +45,30 @@ func TestOptionalResourceProfileOmissionAndReplay(t *testing.T) {
 	legacy := corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: *resource.NewMilliQuantity(p.CPURequestMillis, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity(p.MemoryRequestBytes, resource.BinarySI)}, Limits: corev1.ResourceList{corev1.ResourceCPU: *resource.NewMilliQuantity(p.CPULimitMillis, resource.DecimalSI), corev1.ResourceMemory: *resource.NewQuantity(p.MemoryLimitBytes, resource.BinarySI)}}
 	if !equality.Semantic.DeepEqual(profileResources(p), legacy) || p.Hash() != original {
 		t.Fatal("legacy resources changed")
+	}
+}
+
+func TestStationPolicyAllowsLegacyProfileWithoutChangingItsIdentity(t *testing.T) {
+	t.Setenv(computepolicy.Environment, computepolicy.Unrestricted)
+	in, p, pvc, pv := fixture()
+	c := client(pvc, pv)
+	b := bind(t, c, in, p, pvc.Name)
+	desired, _, err := WorkerObjects(in, p, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := desired.DeepCopy()
+	actual.UID = types.UID(uuid.NewString())
+	computepolicy.Apply(&actual.Spec)
+	if !podMatches(actual, desired, string(actual.UID), p.NodeName) {
+		t.Fatal("policy did not preserve legacy profile binding")
+	}
+	if len(desired.Spec.Containers[0].Resources.Requests) != 2 {
+		t.Fatal("original template changed")
+	}
+	actual.Spec.Containers[0].Resources.Requests = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("9")}
+	if podMatches(actual, desired, string(actual.UID), p.NodeName) {
+		t.Fatal("arbitrary resources accepted")
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/appinstances"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
@@ -23,6 +24,10 @@ import (
 
 func run() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if !computepolicy.Valid() {
+		logger.Error("invalid_cpu_memory_policy")
+		return 1
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	station := os.Getenv("STATION_ID")

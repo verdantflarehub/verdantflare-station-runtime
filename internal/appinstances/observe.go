@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -96,7 +97,14 @@ func normalizePod(pod *corev1.Pod, node string) *corev1.PodSpec {
 }
 func podMatches(actual, desired *corev1.Pod, uid, node string) bool {
 	a, d := normalizePod(actual, node), normalizePod(desired, node)
-	return owned(actual, desired, uid) && a != nil && d != nil && equality.Semantic.DeepEqual(a, d)
+	if !owned(actual, desired, uid) || a == nil || d == nil {
+		return false
+	}
+	if equality.Semantic.DeepEqual(a, d) {
+		return true
+	}
+	computepolicy.Apply(d)
+	return equality.Semantic.DeepEqual(a, d)
 }
 func serviceMatches(actual, desired *corev1.Service, uid string) bool {
 	if !owned(actual, desired, uid) || actual.Spec.ClusterIP == "None" || len(actual.Spec.ExternalIPs) != 0 {

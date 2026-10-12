@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	"google.golang.org/protobuf/proto"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -184,6 +185,7 @@ func (r *ManagementReplacement) Apply(ctx context.Context, c ManagementCheckpoin
 		return managementReady(d), nil
 	}
 	d.Spec = *r.Target.Deployment.Spec.DeepCopy()
+	computepolicy.Apply(&d.Spec.Template.Spec)
 	mark(&d.ObjectMeta, r.Target, r.StationID, r.OrganizationID)
 	d.Annotations[transitionOperationKey] = r.OperationID
 	_, err = r.Kubernetes.Client.AppsV1().Deployments(d.Namespace).Update(ctx, d, metav1.UpdateOptions{})
@@ -223,6 +225,7 @@ func (r *ManagementReplacement) Restore(ctx context.Context, c ManagementCheckpo
 			return false, ErrManagementReplacement
 		}
 		d.Spec = *c.Deployment.Spec.DeepCopy()
+		computepolicy.Apply(&d.Spec.Template.Spec)
 		restoreManagementMarks(d.Annotations, c.Deployment.Annotations)
 		_, err = client.Update(ctx, d, metav1.UpdateOptions{})
 		return false, err

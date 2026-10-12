@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
+
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	appsv1 "k8s.io/api/apps/v1"
@@ -114,6 +116,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			return failed("SERVICE_UNAVAILABLE", err.Error()), nil
 		}
 		d := t.Deployment.DeepCopy()
+		computepolicy.Apply(&d.Spec.Template.Spec)
 		mark(&d.ObjectMeta, t, station, org)
 		if t.Preinstalled {
 			d.Annotations[preinstalledOperationKey] = operation

@@ -5,6 +5,8 @@ import (
 	"net"
 	"reflect"
 
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
+
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -102,6 +104,17 @@ func normalizePreinstalledDeployment(spec map[string]any) {
 	normalizePreinstalledPod(objectAt(objectAt(spec, "template"), "spec"))
 }
 func preinstalledDeploymentCompatible(want, live *appsv1.Deployment) bool {
+	if preinstalledDeploymentExact(want, live) {
+		return true
+	}
+	if !computepolicy.Enabled() {
+		return false
+	}
+	copy := want.DeepCopy()
+	computepolicy.Apply(&copy.Spec.Template.Spec)
+	return preinstalledDeploymentExact(copy, live)
+}
+func preinstalledDeploymentExact(want, live *appsv1.Deployment) bool {
 	w, l := preinstalledObject(want.Spec), preinstalledObject(live.Spec)
 	normalizePreinstalledDeployment(w)
 	normalizePreinstalledDeployment(l)

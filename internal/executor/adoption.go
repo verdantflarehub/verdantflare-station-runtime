@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,6 +42,21 @@ func declaredSubset(want, live any) bool {
 	}
 }
 func compatible(want, live any, ignoreReplicas bool) bool {
+	if compatibleDeclared(want, live, ignoreReplicas) {
+		return true
+	}
+	if spec, ok := want.(appsv1.DeploymentSpec); ok && computepolicy.Enabled() {
+		observed, ok := live.(appsv1.DeploymentSpec)
+		if !ok || computepolicy.Declared(&observed.Template.Spec) {
+			return false
+		}
+		copy := spec.DeepCopy()
+		computepolicy.Apply(&copy.Template.Spec)
+		return compatibleDeclared(*copy, live, ignoreReplicas)
+	}
+	return false
+}
+func compatibleDeclared(want, live any, ignoreReplicas bool) bool {
 	wb, _ := json.Marshal(want)
 	lb, _ := json.Marshal(live)
 	var w, l map[string]any

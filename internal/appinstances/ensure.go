@@ -5,6 +5,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -141,6 +143,7 @@ func EnsureWorker(ctx context.Context, client kubernetes.Interface, in Run, p Pr
 		}
 	}
 	if currentPod == nil {
+		computepolicy.Apply(&pod.Spec)
 		currentPod, e = client.CoreV1().Pods(p.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 		if e != nil {
 			return Observation{}, e
