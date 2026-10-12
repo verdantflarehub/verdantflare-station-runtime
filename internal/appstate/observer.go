@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"math/rand/v2"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,7 +35,8 @@ func observation(d *appsv1.Deployment, deleted bool) ResourceObservation {
 	}
 	o := ResourceObservation{Namespace: d.Namespace, Name: d.Name, UID: string(d.UID), ResourceVersion: d.ResourceVersion,
 		StationID: identityValue("station-id"), OrganizationID: identityValue("organization-id"), InstallationID: identityValue("installation-id"), InstanceID: identityValue("instance-id"), AppID: identityValue("app-id"),
-		Generation: d.Generation, ObservedGeneration: d.Status.ObservedGeneration, Desired: 1, Replicas: d.Status.Replicas, Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Available: d.Status.AvailableReplicas, Terminating: d.DeletionTimestamp != nil, Deleted: deleted, Health: "not_checked"}
+		Generation: d.Generation, ObservedGeneration: d.Status.ObservedGeneration, Desired: 1, Replicas: d.Status.Replicas, Ready: d.Status.ReadyReplicas, Updated: d.Status.UpdatedReplicas, Available: d.Status.AvailableReplicas, Terminating: d.DeletionTimestamp != nil, Deleted: deleted, Health: "not_checked",
+		Metadata: observationMetadata(d)}
 	if d.Spec.Replicas != nil {
 		o.Desired = *d.Spec.Replicas
 	}
@@ -47,6 +49,41 @@ func observation(d *appsv1.Deployment, deleted bool) ResourceObservation {
 		}
 	}
 	return o
+}
+
+// Only a bounded allowlist crosses the stream. Labels are presentation facts,
+// never proof of ownership, a trusted release, or organization visibility.
+func observationMetadata(d *appsv1.Deployment) *ResourceMetadata {
+	bounded := func(value string, limit int) string {
+		if len(value) > limit {
+			return "!invalid"
+		}
+		return value
+	}
+	a, l := d.Annotations, d.Labels
+	m := &ResourceMetadata{TemplateHash: bounded(a["station.verdantflare.com/template-hash"], 128), ImagesComplete: true, Images: []ResourceImage{},
+		Discovery: ResourceDiscovery{Enabled: l["apps.verdantflare.com/managed"] == "true",
+			AppID: bounded(l["app.kubernetes.io/name"], 128), GroupID: bounded(l["apps.verdantflare.com/group"], 128),
+			Brand: bounded(l["apps.verdantflare.com/brand"], 128), Version: bounded(l["app.kubernetes.io/version"], 128),
+			DisplayName: bounded(a["apps.verdantflare.com/display-name"], 512), Models: bounded(a["apps.verdantflare.com/models"], 4096), Source: bounded(a["apps.verdantflare.com/source"], 1024)}}
+	for key := range a {
+		if strings.HasPrefix(key, "station.verdantflare.com/") {
+			m.OwnershipMarked = true
+			break
+		}
+	}
+	if len(d.Spec.Template.Spec.Containers) == 0 || len(d.Spec.Template.Spec.Containers) > 64 {
+		m.ImagesComplete = false
+		return m
+	}
+	for _, c := range d.Spec.Template.Spec.Containers {
+		if c.Name == "" || len(c.Name) > 63 || c.Image == "" || len(c.Image) > 2048 {
+			m.Images, m.ImagesComplete = []ResourceImage{}, false
+			return m
+		}
+		m.Images = append(m.Images, ResourceImage{Component: c.Name, Image: c.Image})
+	}
+	return m
 }
 
 func (o *Observer) inventory(ctx context.Context) ([]ResourceObservation, map[string]string, error) {

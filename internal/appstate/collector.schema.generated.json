@@ -142,6 +142,9 @@
         "instanceId": {
           "type": "string",
           "maxLength": 128
+        },
+        "metadata": {
+          "$ref": "#/$defs/resource-metadata"
         }
       }
     },
@@ -437,6 +440,132 @@
         },
         {
           "$ref": "#/$defs/closing"
+        }
+      ]
+    },
+    "resource-image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "component",
+        "image"
+      ],
+      "properties": {
+        "component": {
+          "type": "string",
+          "maxLength": 63,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+        },
+        "image": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        }
+      }
+    },
+    "resource-discovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "appId",
+        "groupId",
+        "brand",
+        "version",
+        "displayName",
+        "models",
+        "source"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "appId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "groupId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "brand": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 512
+        },
+        "models": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "source": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "resource-metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ownershipMarked",
+        "templateHash",
+        "imagesComplete",
+        "images",
+        "discovery"
+      ],
+      "properties": {
+        "ownershipMarked": {
+          "type": "boolean"
+        },
+        "templateHash": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "imagesComplete": {
+          "type": "boolean"
+        },
+        "images": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/resource-image"
+          }
+        },
+        "discovery": {
+          "$ref": "#/$defs/resource-discovery"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "imagesComplete": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "images": {
+                "minItems": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "images": {
+                "maxItems": 0
+              }
+            }
+          }
         }
       ]
     }

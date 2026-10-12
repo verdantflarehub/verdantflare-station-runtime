@@ -3,28 +3,53 @@
 
 package appstate
 
+type ResourceImage struct {
+	Component string `json:"component"`
+	Image     string `json:"image"`
+}
+
+type ResourceDiscovery struct {
+	Enabled     bool   `json:"enabled"`
+	AppID       string `json:"appId"`
+	GroupID     string `json:"groupId"`
+	Brand       string `json:"brand"`
+	Version     string `json:"version"`
+	DisplayName string `json:"displayName"`
+	Models      string `json:"models"`
+	Source      string `json:"source"`
+}
+
+type ResourceMetadata struct {
+	OwnershipMarked bool              `json:"ownershipMarked"`
+	TemplateHash    string            `json:"templateHash"`
+	ImagesComplete  bool              `json:"imagesComplete"`
+	Images          []ResourceImage   `json:"images"`
+	Discovery       ResourceDiscovery `json:"discovery"`
+}
+
 type ResourceObservation struct {
-	Namespace          string `json:"namespace"`
-	Name               string `json:"name"`
-	UID                string `json:"uid"`
-	ResourceVersion    string `json:"resourceVersion"`
-	StationID          string `json:"stationId"`
-	OrganizationID     string `json:"organizationId"`
-	InstallationID     string `json:"installationId"`
-	AppID              string `json:"appId"`
-	Generation         int64  `json:"generation"`
-	ObservedGeneration int64  `json:"observedGeneration"`
-	Desired            int32  `json:"desired"`
-	Replicas           int32  `json:"replicas"`
-	Ready              int32  `json:"ready"`
-	Updated            int32  `json:"updated"`
-	Available          int32  `json:"available"`
-	ProgressFailed     bool   `json:"progressFailed"`
-	ReplicaFailed      bool   `json:"replicaFailed"`
-	Terminating        bool   `json:"terminating"`
-	Deleted            bool   `json:"deleted"`
-	Health             string `json:"health"`
-	InstanceID         string `json:"instanceId"`
+	Namespace          string            `json:"namespace"`
+	Name               string            `json:"name"`
+	UID                string            `json:"uid"`
+	ResourceVersion    string            `json:"resourceVersion"`
+	StationID          string            `json:"stationId"`
+	OrganizationID     string            `json:"organizationId"`
+	InstallationID     string            `json:"installationId"`
+	AppID              string            `json:"appId"`
+	Generation         int64             `json:"generation"`
+	ObservedGeneration int64             `json:"observedGeneration"`
+	Desired            int32             `json:"desired"`
+	Replicas           int32             `json:"replicas"`
+	Ready              int32             `json:"ready"`
+	Updated            int32             `json:"updated"`
+	Available          int32             `json:"available"`
+	ProgressFailed     bool              `json:"progressFailed"`
+	ReplicaFailed      bool              `json:"replicaFailed"`
+	Terminating        bool              `json:"terminating"`
+	Deleted            bool              `json:"deleted"`
+	Health             string            `json:"health"`
+	InstanceID         string            `json:"instanceId"`
+	Metadata           *ResourceMetadata `json:"metadata,omitempty"`
 }
 
 type SnapshotBegin struct {

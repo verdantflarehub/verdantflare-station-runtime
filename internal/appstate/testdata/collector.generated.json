@@ -20,7 +20,28 @@
     "terminating": false,
     "deleted": false,
     "health": "not_checked",
-    "instanceId": ""
+    "instanceId": "",
+    "metadata": {
+      "ownershipMarked": true,
+      "templateHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "imagesComplete": true,
+      "images": [
+        {
+          "component": "server",
+          "image": "example.invalid/fixture:1.0.0"
+        }
+      ],
+      "discovery": {
+        "enabled": true,
+        "appId": "fixture-app",
+        "groupId": "system",
+        "brand": "vf",
+        "version": "1.0.0",
+        "displayName": "Fixture",
+        "models": "",
+        "source": "deploys/fixture.yaml"
+      }
+    }
   },
   "evaluation": [
     {
@@ -404,7 +425,28 @@
           "terminating": false,
           "deleted": false,
           "health": "not_checked",
-          "instanceId": ""
+          "instanceId": "",
+          "metadata": {
+            "ownershipMarked": true,
+            "templateHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "imagesComplete": true,
+            "images": [
+              {
+                "component": "server",
+                "image": "example.invalid/fixture:1.0.0"
+              }
+            ],
+            "discovery": {
+              "enabled": true,
+              "appId": "fixture-app",
+              "groupId": "system",
+              "brand": "vf",
+              "version": "1.0.0",
+              "displayName": "Fixture",
+              "models": "",
+              "source": "deploys/fixture.yaml"
+            }
+          }
         }
       ]
     },
@@ -438,7 +480,28 @@
         "terminating": false,
         "deleted": false,
         "health": "not_checked",
-        "instanceId": ""
+        "instanceId": "",
+        "metadata": {
+          "ownershipMarked": true,
+          "templateHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "imagesComplete": true,
+          "images": [
+            {
+              "component": "server",
+              "image": "example.invalid/fixture:1.0.0"
+            }
+          ],
+          "discovery": {
+            "enabled": true,
+            "appId": "fixture-app",
+            "groupId": "system",
+            "brand": "vf",
+            "version": "1.0.0",
+            "displayName": "Fixture",
+            "models": "",
+            "source": "deploys/fixture.yaml"
+          }
+        }
       }
     },
     {
