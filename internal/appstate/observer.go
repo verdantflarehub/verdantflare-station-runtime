@@ -172,6 +172,7 @@ func (o *Observer) Session(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		listedAt := time.Now()
 		syncID := uuid.NewString()
 		if err = stream.Send(SnapshotBegin{1, "snapshot-begin", syncID}); err != nil {
 			return err
@@ -186,7 +187,7 @@ func (o *Observer) Session(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		timer := time.NewTimer(60 * time.Second)
+		timer := time.NewTimer(time.Until(listedAt.Add(60 * time.Second)))
 		heartbeat := time.NewTicker(10 * time.Second)
 		resync := false
 		var result error
@@ -215,6 +216,10 @@ func (o *Observer) Session(ctx context.Context) error {
 					resync = true
 				}
 			case <-heartbeat.C:
+				if !time.Now().Before(listedAt.Add(60 * time.Second)) {
+					resync = true
+					break
+				}
 				select {
 				case <-failures:
 					resync = true

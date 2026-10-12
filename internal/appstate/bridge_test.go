@@ -22,14 +22,27 @@ import (
 )
 
 func TestStateObserverCrossProcessCore(t *testing.T) {
+	testObserverCoreStream(t, false)
+}
+
+func TestStateObserverCalibrationOnSameStream(t *testing.T) {
+	testObserverCoreStream(t, true)
+}
+
+func testObserverCoreStream(t *testing.T, calibrate bool) {
+	t.Helper()
 	binary := os.Getenv("STATION_APP_STATE_CORE_TEST_BINARY")
 	if binary == "" {
 		t.Skip("5090 cross-process Core binary required")
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	duration := 20 * time.Second
+	if calibrate {
+		duration = 85 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), duration)
 	defer cancel()
 	path := filepath.Join(t.TempDir(), "bridge.json")
-	cmd := exec.CommandContext(ctx, binary, "-test.run=^TestCollectorBridge$", "-test.v", "-test.timeout=20s")
+	cmd := exec.CommandContext(ctx, binary, "-test.run=^TestCollectorBridge$", "-test.v", "-test.timeout=90s")
 	cmd.Env = append(os.Environ(), "STATION_APP_STATE_BRIDGE_CONFIG="+path)
 	var output bytes.Buffer
 	cmd.Stdout = &output
@@ -76,12 +89,15 @@ func TestStateObserverCrossProcessCore(t *testing.T) {
 		"station.verdantflare.com/station-id": o.StationID, "station.verdantflare.com/organization-id": o.OrganizationID, "station.verdantflare.com/installation-id": o.InstallationID, "station.verdantflare.com/app-id": o.AppID,
 	}}, Spec: appsv1.DeploymentSpec{Replicas: &o.Desired}, Status: appsv1.DeploymentStatus{ObservedGeneration: o.ObservedGeneration, Replicas: o.Replicas, ReadyReplicas: o.Ready, UpdatedReplicas: o.Updated, AvailableReplicas: o.Available}}
 	kube := fake.NewSimpleClientset()
-	stream := watch.NewRaceFreeFake()
-	started := make(chan struct{}, 1)
+	started := make(chan *watch.RaceFreeFakeWatcher, 4)
 	kube.PrependReactor("list", "deployments", func(ktesting.Action) (bool, kruntime.Object, error) {
 		return true, &appsv1.DeploymentList{ListMeta: metav1.ListMeta{ResourceVersion: "bridge:collection"}, Items: []appsv1.Deployment{*d.DeepCopy()}}, nil
 	})
-	kube.PrependWatchReactor("deployments", func(ktesting.Action) (bool, watch.Interface, error) { started <- struct{}{}; return true, stream, nil })
+	kube.PrependWatchReactor("deployments", func(ktesting.Action) (bool, watch.Interface, error) {
+		stream := watch.NewRaceFreeFake()
+		started <- stream
+		return true, stream, nil
+	})
 	observer := Observer{kube, core, []string{"apps"}}
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
@@ -110,12 +126,42 @@ func TestStateObserverCrossProcessCore(t *testing.T) {
 			}
 		}
 	}
+	var stream *watch.RaceFreeFakeWatcher
 	select {
-	case <-started:
+	case stream = <-started:
 	case <-ctx.Done():
 		t.Fatal("observer did not reach Watch")
 	}
 	readState("ready")
+	if calibrate {
+		readSession := func() string {
+			t.Helper()
+			req, _ := http.NewRequestWithContext(ctx, "GET", config.Origin+"/test/session", nil)
+			req.Header.Set("Authorization", "Bearer "+config.Token)
+			res, err := core.http.Do(req)
+			if err != nil {
+				t.Fatal("session inspection failed")
+			}
+			defer res.Body.Close()
+			var result struct {
+				SessionID string `json:"sessionId"`
+			}
+			if json.NewDecoder(res.Body).Decode(&result) != nil || res.StatusCode != 200 || result.SessionID == "" {
+				t.Fatal("missing live stream")
+			}
+			return result.SessionID
+		}
+		first := readSession()
+		select {
+		case stream = <-started:
+		case <-ctx.Done():
+			t.Fatal("periodic full calibration missing")
+		}
+		readState("ready")
+		if readSession() != first {
+			t.Fatal("sixty-second calibration forced reconnect instead of reusing stream")
+		}
+	}
 	changed := d.DeepCopy()
 	changed.Status.ReadyReplicas = 0
 	changed.ResourceVersion = "bridge:update"
