@@ -176,7 +176,11 @@ func TestManagementJournalUncertaintyNeverClaimsSuccess(t *testing.T) {
 			}
 			m.sealErr, m.verifyErr = ErrManagementReplacement, ErrManagementReplacement
 			next, err = advanceManagement(context.Background(), r, ManagementBinding{}, d, m, phase == "restoring")
-			if err != nil || next.Phase != "recovery_required" {
+			if phase == "sealing" {
+				if !errors.Is(err, ErrManagementReplacement) || next.Phase != "sealing" {
+					t.Fatal("lost pre-apply provenance", next.Phase, err)
+				}
+			} else if err != nil || next.Phase != "recovery_required" {
 				t.Fatal(next.Phase, err)
 			}
 		})

@@ -140,4 +140,29 @@ func TestManagementLegacyPublishedImageAndSQLiteRecovery(t *testing.T) {
 	state(call("release", proof), proof, "released")
 	state(call("status", next), next, "sealed")
 	state(call("release", next), next, "released")
+	// The old immutable image has no cancel method. Exercise the production
+	// adapter extension against its real SQLite database and busy editor.
+	canceled := proof
+	canceled.OperationID = uuid.Must(uuid.NewV7()).String()
+	fixture("busy")
+	code(call("seal", canceled), "INSTALLATION_BUSY")
+	wrong := canceled
+	wrong.OrganizationID = uuid.Must(uuid.NewV7()).String()
+	code(call("cancel", wrong), "MAINTENANCE_SCOPE_CONFLICT")
+	call("cancel", canceled) // Discard success as if the response were lost.
+	client, err = NewKubernetes(path, "dev.verdantflarehub.com")
+	if err != nil {
+		t.Fatal("restart client unavailable")
+	}
+	state(call("cancel", canceled), canceled, "released")
+	state(call("seal", canceled), canceled, "released")
+	fixture("save-close")
+	state(call("seal", canceled), canceled, "released")
+	newer := proof
+	newer.OperationID = uuid.Must(uuid.NewV7()).String()
+	state(call("seal", newer), newer, "sealed")
+	state(call("cancel", canceled), canceled, "released")
+	state(call("status", newer), newer, "sealed")
+	state(call("cancel", newer), newer, "released")
+	state(call("seal", newer), newer, "released")
 }

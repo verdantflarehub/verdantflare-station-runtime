@@ -21,6 +21,7 @@ import (
 )
 
 var ErrManagementMaintenanceUnavailable = errors.New("MANAGEMENT_MAINTENANCE_UNAVAILABLE")
+var ErrManagementInstallationBusy = errors.New("MANAGEMENT_INSTALLATION_BUSY")
 var managementDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 // Supplied only by the verified platform release configuration, never by an
@@ -70,6 +71,10 @@ type managementProofResponse struct {
 
 func (m *HTTPManagementMaintenance) Seal(ctx context.Context, b ManagementBinding, c ManagementCheckpoint) error {
 	return m.call(ctx, b, c, false, "seal")
+}
+
+func (m *HTTPManagementMaintenance) Cancel(ctx context.Context, b ManagementBinding, c ManagementCheckpoint) error {
+	return m.call(ctx, b, c, false, "cancel")
 }
 
 func (m *HTTPManagementMaintenance) Verify(ctx context.Context, b ManagementBinding, c ManagementCheckpoint, target bool) error {
@@ -129,6 +134,7 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 		return ErrManagementReplacement
 	}
 	var actual managementProofResponse
+	busy := false
 	if config.Transport == legacyComfyTransport {
 		if m.Kubernetes.maintenanceExec == nil {
 			return ErrManagementMaintenanceUnavailable
@@ -149,12 +155,16 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 			return ErrManagementReplacement
 		}
 		if result.Proof == nil && result.Code != "" {
-			return ErrManagementMaintenanceUnavailable // Busy/unknown effects stay in the original durable phase.
+			if action != "seal" || result.Code != "INSTALLATION_BUSY" {
+				return ErrManagementMaintenanceUnavailable
+			}
+			busy = true
+		} else {
+			if result.Proof == nil || result.Code != "" {
+				return ErrManagementReplacement
+			}
+			actual = *result.Proof
 		}
-		if result.Proof == nil || result.Code != "" {
-			return ErrManagementReplacement
-		}
-		actual = *result.Proof
 	} else {
 		endpoint := "http://" + config.Service + "." + want.Deployment.Namespace + ".svc:" + strconv.Itoa(int(config.Port)) + "/internal/maintenance/v1/" + action
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
@@ -172,17 +182,23 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 		}
 		defer response.Body.Close()
 		if response.StatusCode != http.StatusOK {
-			return ErrManagementMaintenanceUnavailable
-		}
-		if strictjson.Decode(response.Body, 16<<10, &actual) != nil {
+			var failure struct {
+				Code string `json:"code"`
+			}
+			if action != "seal" || response.StatusCode != http.StatusConflict ||
+				strictjson.Decode(response.Body, 16<<10, &failure) != nil || failure.Code != "INSTALLATION_BUSY" {
+				return ErrManagementMaintenanceUnavailable
+			}
+			busy = true
+		} else if strictjson.Decode(response.Body, 16<<10, &actual) != nil {
 			return ErrManagementReplacement
 		}
 	}
 	wantState := "sealed"
-	if action == "release" {
+	if action == "release" || action == "cancel" {
 		wantState = "released"
 	}
-	if actual.managementProof != proof || actual.State != wantState {
+	if !busy && (actual.managementProof != proof || actual.State != wantState) {
 		return ErrManagementReplacement
 	}
 	after, err := m.observe(ctx, driver, c, target, config)
@@ -191,6 +207,9 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 	}
 	if !reflect.DeepEqual(before, after) {
 		return ErrManagementMaintenanceUnavailable
+	}
+	if busy {
+		return ErrManagementInstallationBusy
 	}
 	return nil
 }

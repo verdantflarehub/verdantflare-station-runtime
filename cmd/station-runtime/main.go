@@ -166,7 +166,7 @@ func run() int {
 			}
 		}
 		if maintenance != nil {
-			if e = pool.QueryRow(c, `SELECT EXISTS(SELECT 1 FROM station.schema_migrations WHERE version=17 AND name='0017_runtime_management_release.sql')`).Scan(&table); e != nil || !table {
+			if e = pool.QueryRow(c, `SELECT EXISTS(SELECT 1 FROM station.schema_migrations WHERE version=19 AND name='0019_runtime_management_cancellation.sql')`).Scan(&table); e != nil || !table {
 				return errors.New("transition migrations not ready")
 			}
 		}

@@ -40,6 +40,11 @@ type ManagementMaintenance interface {
 	Verify(context.Context, ManagementBinding, ManagementCheckpoint, bool) error
 }
 
+// Cancellation proves a durable released marker on the original source.
+type ManagementMaintenanceCanceler interface {
+	Cancel(context.Context, ManagementBinding, ManagementCheckpoint) error
+}
+
 type ManagementMaintenanceReleaser interface {
 	Release(context.Context, ManagementBinding, ManagementCheckpoint, bool) error
 }
@@ -97,7 +102,7 @@ func managementHash(b ManagementBinding) []byte {
 }
 
 func managementPhase(phase string) bool {
-	return slices.Contains([]string{"checking", "sealing", "applying", "verifying", "prepared", "restoring", "restored", "recovery_required", "releasing_source", "releasing_target", "released_source", "released_target"}, phase)
+	return slices.Contains([]string{"checking", "sealing", "canceling_source", "canceled_source", "applying", "verifying", "prepared", "restoring", "restored", "recovery_required", "releasing_source", "releasing_target", "released_source", "released_target"}, phase)
 }
 
 func decodeManagementRecord(row pgx.Row) (managementRecord, error) {
@@ -301,9 +306,11 @@ func advanceManagement(ctx context.Context, r managementRecord, b ManagementBind
 	if slices.Contains([]string{"releasing_source", "releasing_target", "released_source", "released_target"}, r.Phase) {
 		return r, ErrManagementReplacement // Release may already have admitted new work.
 	}
-	if restore && r.Phase != "restoring" && r.Phase != "restored" {
+	if restore && !slices.Contains([]string{"restoring", "restored", "canceling_source", "canceled_source"}, r.Phase) {
 		if r.Checkpoint == nil {
 			r.Phase = "restored"
+		} else if r.Phase == "sealing" {
+			r.Phase = "canceling_source"
 		} else {
 			r.Phase = "restoring"
 		}
@@ -325,6 +332,18 @@ func advanceManagement(ctx context.Context, r managementRecord, b ManagementBind
 		err = m.Seal(ctx, b, *r.Checkpoint)
 		if err == nil {
 			r.Phase = "applying"
+		} else if errors.Is(err, ErrManagementInstallationBusy) {
+			r.Phase = "canceling_source"
+			err = nil // Commit intent; cancellation is a separate external step.
+		}
+	case "canceling_source", "canceled_source":
+		canceler, ok := m.(ManagementMaintenanceCanceler)
+		if !ok {
+			return r, ErrManagementMaintenanceUnavailable
+		}
+		err = canceler.Cancel(ctx, b, *r.Checkpoint)
+		if err == nil {
+			r.Phase = "canceled_source"
 		}
 	case "applying":
 		var done bool
@@ -356,7 +375,7 @@ func advanceManagement(ctx context.Context, r managementRecord, b ManagementBind
 	default:
 		return r, ErrManagementReplacement
 	}
-	if errors.Is(err, ErrManagementReplacement) && r.Checkpoint != nil {
+	if errors.Is(err, ErrManagementReplacement) && r.Checkpoint != nil && !slices.Contains([]string{"sealing", "canceling_source", "canceled_source"}, r.Phase) {
 		r.Phase = "recovery_required"
 		return r, nil
 	}
@@ -368,7 +387,7 @@ func advanceManagementRelease(ctx context.Context, r managementRecord, b Managem
 	if target {
 		prepared, releasing, released = "prepared", "releasing_target", "released_target"
 	}
-	if r.Phase == prepared {
+	if r.Phase == prepared || (!target && r.Phase == "canceled_source") {
 		r.Phase = releasing
 		return r, nil // Commit intent before the first external release.
 	}

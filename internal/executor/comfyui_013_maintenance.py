@@ -53,7 +53,7 @@ def main():
         fail()
     request = json.loads(raw, object_pairs_hook=pairs)
     if (not isinstance(request, dict) or set(request) != {'action', 'proof'}
-            or request['action'] not in ('seal', 'status', 'release')):
+            or request['action'] not in ('seal', 'status', 'release', 'cancel')):
         fail()
     proof = request['proof']
     fields = {'schema_version', 'operation_id', 'installation_id', 'station_id',
@@ -132,7 +132,24 @@ def main():
             finally:
                 db.close()
 
-    gate = MaintenanceAdmission(ExistingStore())
+    class CancelableAdmission(MaintenanceAdmission):
+        def cancel(self, installation_id, station_id, organization_id, operation_id):
+            """Persist a tombstone even when seal has not arrived yet."""
+            scope = self._scope(installation_id, station_id, organization_id, operation_id)
+            with self.store.transaction() as db:
+                row = self._prior(db, scope)
+                if row is None:
+                    rows = db.execute('''SELECT m.station_id,i.organization_id FROM managed_instances m
+                        JOIN instances i ON i.id=m.id WHERE m.installation_id=?''', (installation_id,)).fetchall()
+                    if any((r['station_id'], r['organization_id']) != (station_id, organization_id) for r in rows):
+                        raise TaskError('MAINTENANCE_SCOPE_CONFLICT')
+                    db.execute("INSERT INTO maintenance_seals VALUES (?,?,?,?,'released')",
+                               (operation_id, installation_id, station_id, organization_id))
+                else:
+                    db.execute("UPDATE maintenance_seals SET state='released' WHERE operation_id=?", (operation_id,))
+                return self._view(self._prior(db, scope))
+
+    gate = CancelableAdmission(ExistingStore())
     try:
         row = getattr(gate, request['action'])(proof['installation_id'], proof['station_id'],
                                                proof['organization_id'], proof['operation_id'])

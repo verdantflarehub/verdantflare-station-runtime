@@ -57,6 +57,11 @@ func (j *ManagementJournal) ReconcileStep(ctx context.Context, step ManagementSt
 			return ManagementStepResult{}, ErrManagementReplacement
 		}
 	case "restore":
+		if phase == "canceling_source" {
+			phase = "restoring"
+		} else if phase == "canceled_source" {
+			phase = "restored"
+		}
 		if !slices.Contains([]string{"checking", "restoring", "restored", "recovery_required"}, phase) {
 			return ManagementStepResult{}, ErrManagementReplacement
 		}
@@ -64,7 +69,12 @@ func (j *ManagementJournal) ReconcileStep(ctx context.Context, step ManagementSt
 			phase = "restoring"
 		}
 	case "prepare":
-		if !slices.Contains([]string{"checking", "sealing", "applying", "verifying", "prepared", "recovery_required"}, phase) {
+		if phase == "canceling_source" {
+			phase = "sealing"
+		} else if phase == "canceled_source" {
+			phase = "rejected"
+		}
+		if !slices.Contains([]string{"rejected", "checking", "sealing", "applying", "verifying", "prepared", "recovery_required"}, phase) {
 			return ManagementStepResult{}, ErrManagementReplacement
 		}
 	}

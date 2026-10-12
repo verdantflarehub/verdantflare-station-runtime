@@ -41,10 +41,12 @@ else:
         if action == 'busy':
             opened = editor.open(actor, str(uuid.uuid4()))
             state['session'] = opened['session_id']
+            with store.transaction() as db:
+                state['version'] = db.execute('SELECT version FROM base_editor WHERE instance_id=?', (state['instance'],)).fetchone()[0]
             (root / 'fixture.json').write_text(json.dumps(state))
         elif action == 'save-close':
             graph = {**EMPTY_GRAPH, 'nodes': [{'id': 1, 'type': 'Note'}]}
-            editor.update(actor, state['session'], 0, graph)
+            editor.update(actor, state['session'], state['version'], graph)
             editor.close(actor, state['session'])
             with store.transaction() as db:
                 state['retained'] = {
