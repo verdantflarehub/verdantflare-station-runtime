@@ -125,7 +125,7 @@ func TestManagementConfigurationClosesReleaseBinding(t *testing.T) {
 	s.ManifestDigest = s.ReleaseDigest
 	s.DefaultWorkerVersion = s.AppVersion
 	s.CompatibleWorkerVersions = []string{s.AppVersion}
-	base := maintenanceRegistration{s, map[string]string{"server": "sha256:" + strings.Repeat("a", 64)}, "manager", 80, "APP_MAINTENANCE_TEST_TOKEN"}
+	base := maintenanceRegistration{Snapshot: s, Images: map[string]string{"server": "sha256:" + strings.Repeat("a", 64)}, Service: "manager", Port: 80, TokenEnv: "APP_MAINTENANCE_TEST_TOKEN"}
 	control := strings.Repeat("control-test-", 4)
 	for _, scenario := range []string{"valid", "missing token", "reused token", "wrong template", "wrong service", "missing image", "extra image", "bad digest", "duplicate version", "inline token", "missing worker"} {
 		t.Run(scenario, func(t *testing.T) {

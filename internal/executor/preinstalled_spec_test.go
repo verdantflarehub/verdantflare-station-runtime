@@ -26,7 +26,7 @@ func TestPreinstalledAdoptionAllowsKnownDefaultsWithoutSpecMutation(t *testing.T
 	live.Spec.Template.Spec.Containers[0].TerminationMessagePath = "/dev/termination-log"
 	live.Spec.Template.Spec.Containers[0].TerminationMessagePolicy = corev1.TerminationMessageReadFile
 	client := fake.NewSimpleClientset(live)
-	driver := Kubernetes{client}
+	driver := Kubernetes{Client: client}
 	out, err := driver.Step(context.Background(), app, "adopt", "op", "station", "org")
 	if err != nil || out.Status != "succeeded" {
 		t.Fatal(out, err)
@@ -75,7 +75,7 @@ func TestPreinstalledAdoptionRejectsUndeclaredExecutionInputs(t *testing.T) {
 				spec.DNSConfig = &corev1.PodDNSConfig{Nameservers: []string{"127.0.0.1"}}
 			}
 			client := fake.NewSimpleClientset(live)
-			driver := Kubernetes{client}
+			driver := Kubernetes{Client: client}
 			out, err := driver.Step(context.Background(), app, "adopt", "op", "station", "org")
 			if err != nil || out.Code != "CONFLICT" {
 				t.Fatal("undeclared input accepted", out, err)

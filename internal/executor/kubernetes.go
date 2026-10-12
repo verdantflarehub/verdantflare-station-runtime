@@ -33,7 +33,10 @@ func failed(code, message string) Result { return Result{"failed", "checking", c
 type Driver interface {
 	Step(context.Context, Target, string, string, string, string) (Result, error)
 }
-type Kubernetes struct{ Client kubernetes.Interface }
+type Kubernetes struct {
+	Client          kubernetes.Interface
+	maintenanceExec legacyMaintenanceExec
+}
 
 func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	var cfg *rest.Config
@@ -62,7 +65,7 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kubernetes{c}, nil
+	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c)}, nil
 }
 func annotations(t Target, station, org string) map[string]string {
 	values := map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}

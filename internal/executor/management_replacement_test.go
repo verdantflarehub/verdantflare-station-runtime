@@ -18,6 +18,10 @@ import (
 )
 
 func managementFixture(t *testing.T) (*ManagementReplacement, *fake.Clientset, ManagementCheckpoint) {
+	return managementFixtureFor(t, nil)
+}
+
+func managementFixtureFor(t *testing.T, configure func(*Target, *Target)) (*ManagementReplacement, *fake.Clientset, ManagementCheckpoint) {
 	t.Helper()
 	source, in := installationFixture()
 	source.Hash[0] = 1
@@ -28,8 +32,12 @@ func managementFixture(t *testing.T) (*ManagementReplacement, *fake.Clientset, M
 	target.Deployment = source.Deployment.DeepCopy()
 	target.Version, target.Hash[0] = "1.0.1", 2
 	target.Deployment.Spec.Template.Spec.Containers[0].Image = "example.invalid/server:1.0.1"
+	if configure != nil {
+		configure(&source, &target)
+	}
+	in.AppId, in.AppVersion = source.AppID, source.Version
 	client := fake.NewSimpleClientset()
-	r, err := NewManagementReplacement(&Kubernetes{client}, source, target, in)
+	r, err := NewManagementReplacement(&Kubernetes{Client: client}, source, target, in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +254,7 @@ func TestManagementReplacementRejectsIncompatibleTargets(t *testing.T) {
 			target.Hash[0] = 2
 			mutate(&target)
 			client := fake.NewSimpleClientset()
-			if _, err := NewManagementReplacement(&Kubernetes{client}, source, target, in); !errors.Is(err, ErrManagementReplacement) {
+			if _, err := NewManagementReplacement(&Kubernetes{Client: client}, source, target, in); !errors.Is(err, ErrManagementReplacement) {
 				t.Fatal(err)
 			}
 			if len(client.Actions()) != 0 {

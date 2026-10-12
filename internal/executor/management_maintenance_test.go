@@ -33,8 +33,12 @@ type maintenanceFixture struct {
 }
 
 func newMaintenanceFixture(t *testing.T) *maintenanceFixture {
+	return newMaintenanceFixtureFor(t, nil)
+}
+
+func newMaintenanceFixtureFor(t *testing.T, configure func(*Target, *Target)) *maintenanceFixture {
 	t.Helper()
-	d, k, c := managementFixture(t)
+	d, k, c := managementFixtureFor(t, configure)
 	b := ManagementBinding{OperationID: d.OperationID, InstallationID: d.Source.InstallationID, StationID: d.StationID, OrganizationID: d.OrganizationID, UserID: uuid.Must(uuid.NewV7()).String(), ExpectedRevision: 1}
 	makeRelease := func(v Target, digest string) ManagementRelease {
 		return ManagementRelease{AppID: v.AppID, AppVersion: v.Version, ReleaseRef: v.Version, ReleaseDigest: "sha256:" + strings.Repeat(digest, 64), TemplateDigest: "sha256:" + hex.EncodeToString(v.Hash[:]), DashboardDigest: "sha256:" + strings.Repeat("b", 64), DataContract: "comfyui-state-v1"}

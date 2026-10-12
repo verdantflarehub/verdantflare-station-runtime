@@ -41,7 +41,7 @@ func TestComputePolicyInstallReplaysOriginalHash(t *testing.T) {
 	app := target()
 	app.Deployment.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}}
 	c := fake.NewClientset()
-	k := Kubernetes{c}
+	k := Kubernetes{Client: c}
 	ctx := context.Background()
 	if _, err := k.Step(ctx, app, "install", "operation", "station", "org"); err != nil {
 		t.Fatal(err)

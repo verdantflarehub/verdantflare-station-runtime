@@ -17,7 +17,7 @@ func target() Target {
 func TestInstallRecoveryAndReadiness(t *testing.T) {
 	ctx := context.Background()
 	client := fake.NewSimpleClientset()
-	driver := Kubernetes{client}
+	driver := Kubernetes{Client: client}
 	app := target()
 	step := func() Result {
 		t.Helper()
@@ -70,14 +70,14 @@ func TestInstallRecoveryAndReadiness(t *testing.T) {
 func TestUnavailableAdaptersHaveNoSideEffects(t *testing.T) {
 	for _, action := range []string{"stop", "restart", "delete"} {
 		c := fake.NewSimpleClientset()
-		d := Kubernetes{c}
+		d := Kubernetes{Client: c}
 		r, e := d.Step(context.Background(), target(), action, "op", "station", "org")
 		if e != nil || r.Status != "failed" || len(c.Actions()) != 0 {
 			t.Fatalf("unsafe %s: %+v %v", action, r, e)
 		}
 	}
 	c := fake.NewSimpleClientset()
-	d := Kubernetes{c}
+	d := Kubernetes{Client: c}
 	app := target()
 	app.Models = []string{"model@1.0.0"}
 	r, e := d.Step(context.Background(), app, "install", "op", "station", "org")
@@ -89,7 +89,7 @@ func TestForeignWorkloadIsNotTakenOver(t *testing.T) {
 	app := target()
 	app.Deployment.Annotations = map[string]string{ownerKey: "other-station"}
 	c := fake.NewSimpleClientset(app.Deployment)
-	d := Kubernetes{c}
+	d := Kubernetes{Client: c}
 	r, e := d.Step(context.Background(), app, "install", "op", "station", "org")
 	if e != nil || r.Code != "CONFLICT" {
 		t.Fatal(r, e)
@@ -109,7 +109,7 @@ func TestStartRegistersMatchingExistingApplication(t *testing.T) {
 	live.Generation = 1
 	live.Status = appsv1.DeploymentStatus{ObservedGeneration: 1, Replicas: 1, UpdatedReplicas: 1, ReadyReplicas: 1, AvailableReplicas: 1}
 	c := fake.NewSimpleClientset(live)
-	driver := Kubernetes{c}
+	driver := Kubernetes{Client: c}
 	r, e := driver.Step(ctx, app, "start", "op", "station", "org")
 	if e != nil || r.Status != "running" {
 		t.Fatal(r, e)

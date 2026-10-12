@@ -136,7 +136,9 @@ func run() int {
 	if maintenance != nil {
 		credentials := []string{transitionToken}
 		for _, release := range maintenance.Releases {
-			credentials = append(credentials, release.Token)
+			if release.Token != "" { // Legacy exec authenticates through Kubernetes, not an App token.
+				credentials = append(credentials, release.Token)
+			}
 		}
 		for _, credential := range credentials {
 			_, reused := appCallers[sha256.Sum256([]byte("Bearer "+credential))]

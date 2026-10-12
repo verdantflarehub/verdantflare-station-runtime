@@ -17,7 +17,7 @@ func TestPreinstalledInstallNeverAdoptsExistingWorkload(t *testing.T) {
 			mark(&live.ObjectMeta, app, "station", "org")
 		}
 		client := fake.NewSimpleClientset(live)
-		driver := Kubernetes{client}
+		driver := Kubernetes{Client: client}
 		out, err := driver.Step(context.Background(), app, "install", "new-operation", "station", "org")
 		if err != nil || out.Code != "CONFLICT" {
 			t.Fatal("existing deployment accepted", out, err)
@@ -34,7 +34,7 @@ func TestPreinstalledLostCreateResponseUsesOriginalOperation(t *testing.T) {
 	app := target()
 	app.Preinstalled = true
 	client := fake.NewSimpleClientset()
-	driver := Kubernetes{client}
+	driver := Kubernetes{Client: client}
 	for i := 0; i < 2; i++ {
 		out, err := driver.Step(ctx, app, "install", "original-operation", "station", "org")
 		if err != nil || out.Status != "running" {

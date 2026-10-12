@@ -94,7 +94,7 @@ func TestAppCenterKubernetesInstallRecovery(t *testing.T) {
 	app.Services = []*corev1.Service{{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: app.Deployment.Namespace}, Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "test"}}}}
 	app, _ = bindAppCenterTarget(app, r.Command, r.Guard)
 	c := fake.NewSimpleClientset()
-	driver := &Kubernetes{c}
+	driver := &Kubernetes{Client: c}
 	ctx := context.Background()
 	check := func(first bool) error {
 		return driver.CheckAppCenter(ctx, app, "install", r.Command.OperationId, r.Command.StationId, r.Command.OrganizationId, first)
@@ -176,7 +176,7 @@ func TestAppCenterKubernetesStartIdentity(t *testing.T) {
 			if variant != "missing" {
 				c.Tracker().Add(live)
 			}
-			out, err := (&Kubernetes{c}).Step(context.Background(), app, "start", r.Command.OperationId, r.Command.StationId, r.Command.OrganizationId)
+			out, err := (&Kubernetes{Client: c}).Step(context.Background(), app, "start", r.Command.OperationId, r.Command.StationId, r.Command.OrganizationId)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -83,7 +83,7 @@ func TestDurableRecovery(t *testing.T) {
 	p, in := runtimeDB(t)
 	client := fake.NewSimpleClientset()
 	app := target()
-	svc := &Service{Pool: p, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{client}}
+	svc := &Service{Pool: p, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{Client: client}}
 	ctx := context.Background()
 	out, e := svc.Reconcile(ctx, in)
 	if e != nil || out.Status != "running" {
@@ -97,7 +97,7 @@ func TestDurableRecovery(t *testing.T) {
 		t.Fatal(out, e)
 	}
 	// Replace the entire service instance; the persisted operation remains resumable.
-	svc = &Service{Pool: p, StationID: in.StationId, Targets: svc.Targets, Driver: &Kubernetes{client}}
+	svc = &Service{Pool: p, StationID: in.StationId, Targets: svc.Targets, Driver: &Kubernetes{Client: client}}
 	in.RequestId = "new-trace-id"
 	out, e = svc.Reconcile(ctx, in)
 	if e != nil || out.Status != "running" {
@@ -124,7 +124,7 @@ func TestDurableRecovery(t *testing.T) {
 func TestTemplateChangeFailsRecovery(t *testing.T) {
 	p, in := runtimeDB(t)
 	app := target()
-	svc := &Service{Pool: p, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{fake.NewSimpleClientset()}, Timeout: time.Minute}
+	svc := &Service{Pool: p, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{Client: fake.NewSimpleClientset()}, Timeout: time.Minute}
 	if _, e := svc.Reconcile(context.Background(), in); e != nil {
 		t.Fatal(e)
 	}

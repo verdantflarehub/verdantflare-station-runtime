@@ -27,11 +27,13 @@ var managementDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 // App request or an observed Pod. Images maps every container name (including
 // init containers) to its published digest. Token is never persisted or logged.
 type ManagementMaintenanceRelease struct {
-	Snapshot ManagementRelease
-	Images   map[string]string
-	Service  string
-	Port     int32
-	Token    string
+	Snapshot  ManagementRelease
+	Images    map[string]string
+	Service   string
+	Port      int32
+	Token     string
+	Transport string
+	Container string
 }
 
 type HTTPManagementMaintenance struct {
@@ -101,7 +103,7 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 	config, ok := m.Releases[release.ReleaseDigest]
 	if !ok || !managementDigest.MatchString(release.ReleaseDigest) || !managementDigest.MatchString(release.DashboardDigest) ||
 		!reflect.DeepEqual(config.Snapshot, release) || release.DataContract == "" || !validName(config.Service) ||
-		config.Port < 1 || config.Port > 65535 || len(config.Token) < 32 || strings.ContainsAny(config.Token, "\r\n\t ") {
+		config.Port < 1 || config.Port > 65535 || !validMaintenanceTransport(config, want) {
 		return ErrManagementReplacement
 	}
 	serviceFound := false
@@ -126,30 +128,61 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 	if err != nil {
 		return ErrManagementReplacement
 	}
-	endpoint := "http://" + config.Service + "." + want.Deployment.Namespace + ".svc:" + strconv.Itoa(int(config.Port)) + "/internal/maintenance/v1/" + action
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
-	if err != nil {
-		return ErrManagementReplacement
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+config.Token)
-	response, err := m.client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	var actual managementProofResponse
+	if config.Transport == legacyComfyTransport {
+		if m.Kubernetes.maintenanceExec == nil {
+			return ErrManagementMaintenanceUnavailable
 		}
-		return ErrManagementMaintenanceUnavailable // Never expose URL/transport errors or response bodies.
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return ErrManagementMaintenanceUnavailable
+		input, _ := json.Marshal(struct {
+			Action string          `json:"action"`
+			Proof  managementProof `json:"proof"`
+		}{action, proof})
+		output, err := m.Kubernetes.maintenanceExec(ctx, want.Deployment.Namespace, before.PodName, config.Container, input)
+		if err != nil {
+			return ErrManagementMaintenanceUnavailable
+		}
+		var result struct {
+			Proof *managementProofResponse `json:"proof,omitempty"`
+			Code  string                   `json:"code,omitempty"`
+		}
+		if strictjson.Decode(bytes.NewReader(output), 16<<10, &result) != nil {
+			return ErrManagementReplacement
+		}
+		if result.Proof == nil && result.Code != "" {
+			return ErrManagementMaintenanceUnavailable // Busy/unknown effects stay in the original durable phase.
+		}
+		if result.Proof == nil || result.Code != "" {
+			return ErrManagementReplacement
+		}
+		actual = *result.Proof
+	} else {
+		endpoint := "http://" + config.Service + "." + want.Deployment.Namespace + ".svc:" + strconv.Itoa(int(config.Port)) + "/internal/maintenance/v1/" + action
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(raw))
+		if err != nil {
+			return ErrManagementReplacement
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+config.Token)
+		response, err := m.client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return ErrManagementMaintenanceUnavailable // Never expose URL/transport errors or response bodies.
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return ErrManagementMaintenanceUnavailable
+		}
+		if strictjson.Decode(response.Body, 16<<10, &actual) != nil {
+			return ErrManagementReplacement
+		}
 	}
 	wantState := "sealed"
 	if action == "release" {
 		wantState = "released"
 	}
-	var actual managementProofResponse
-	if strictjson.Decode(response.Body, 16<<10, &actual) != nil || actual.managementProof != proof || actual.State != wantState {
+	if actual.managementProof != proof || actual.State != wantState {
 		return ErrManagementReplacement
 	}
 	after, err := m.observe(ctx, driver, c, target, config)
@@ -165,6 +198,7 @@ func (m *HTTPManagementMaintenance) call(ctx context.Context, b ManagementBindin
 // The complete observation is compared across the authenticated request. A
 // restart/replacement cannot inherit a prior process's maintenance proof.
 type managementProcess struct {
+	PodName    string
 	PodUID     string
 	Containers map[string]managementContainer
 }
@@ -246,7 +280,10 @@ func (m *HTTPManagementMaintenance) observe(ctx context.Context, r *ManagementRe
 	if !ready || len(p.Spec.EphemeralContainers) > 0 || len(config.Images) != len(d.Spec.Template.Spec.Containers)+len(d.Spec.Template.Spec.InitContainers) {
 		return empty, ErrManagementReplacement
 	}
-	result := managementProcess{string(p.UID), map[string]managementContainer{}}
+	if config.Transport == legacyComfyTransport && !legacyComfyPod(p, config.Container) {
+		return empty, ErrManagementReplacement
+	}
+	result := managementProcess{PodName: p.Name, PodUID: string(p.UID), Containers: map[string]managementContainer{}}
 	for i, group := range [][2][]corev1.Container{{d.Spec.Template.Spec.Containers, p.Spec.Containers}, {d.Spec.Template.Spec.InitContainers, p.Spec.InitContainers}} {
 		statuses := p.Status.ContainerStatuses
 		if i == 1 {

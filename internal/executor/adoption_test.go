@@ -23,7 +23,7 @@ func TestAdoptionMetadataOnlyAndReplay(t *testing.T) {
 	live.ResourceVersion = "7"
 	live.Generation = 3
 	c := fake.NewSimpleClientset(live)
-	d := Kubernetes{c}
+	d := Kubernetes{Client: c}
 	for i := 0; i < 2; i++ {
 		r, e := d.Step(ctx, app, "adopt", "op", "station", "org")
 		if e != nil || r.Status != "succeeded" {
@@ -64,7 +64,7 @@ func TestAdoptionPreflightNoMutation(t *testing.T) {
 				app.Services = []*corev1.Service{{ObjectMeta: metav1.ObjectMeta{Name: "missing", Namespace: live.Namespace}}}
 			}
 			c := fake.NewSimpleClientset(live)
-			d := Kubernetes{c}
+			d := Kubernetes{Client: c}
 			r, e := d.Step(context.Background(), app, "adopt", "op", "station", "org")
 			if e != nil || r.Code != "CONFLICT" {
 				t.Fatal(r, e)

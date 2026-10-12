@@ -157,7 +157,7 @@ func TestInstallationWorkloadRecoveryAndForeignIdentity(t *testing.T) {
 	}
 	ctx := context.Background()
 	client := fake.NewSimpleClientset()
-	driver := Kubernetes{client}
+	driver := Kubernetes{Client: client}
 	step := func() Result {
 		t.Helper()
 		r, err := driver.Step(ctx, bound, "install", in.OperationId, in.StationId, in.OrganizationId)
@@ -210,7 +210,7 @@ func TestInstallationWorkloadRecoveryAndForeignIdentity(t *testing.T) {
 				service.Spec.Selector["app"] = "other"
 			}
 			c := fake.NewSimpleClientset(changed, service)
-			d := Kubernetes{c}
+			d := Kubernetes{Client: c}
 			r, err := d.Step(ctx, bound, "install", in.OperationId, in.StationId, in.OrganizationId)
 			if err != nil || r.Code != "CONFLICT" {
 				t.Fatal("foreign identity accepted", r, err)

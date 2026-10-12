@@ -18,7 +18,7 @@ func TestInstallationDatabaseBindingRecovery(t *testing.T) {
 	target, _ := installationFixture()
 	in.InstallationId = uuid.Must(uuid.NewV7()).String()
 	client := fake.NewSimpleClientset()
-	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": target}, Driver: &Kubernetes{client}}
+	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": target}, Driver: &Kubernetes{Client: client}}
 	ctx := context.Background()
 	if out, err := svc.Reconcile(ctx, in); err != nil || out.Status != "running" {
 		t.Fatal(out, err)
@@ -67,7 +67,7 @@ func TestInstallationDatabaseLegacyReplayIgnoresNewField(t *testing.T) {
 	pool, in := runtimeDB(t)
 	app := target()
 	client := fake.NewSimpleClientset()
-	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{client}}
+	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{Client: client}}
 	ctx := context.Background()
 	if _, err := svc.Reconcile(ctx, in); err != nil {
 		t.Fatal(err)
@@ -89,7 +89,7 @@ func TestInstallationDatabaseMissingIdentityCannotBeAccepted(t *testing.T) {
 	pool, in := runtimeDB(t)
 	app, _ := installationFixture()
 	client := fake.NewSimpleClientset()
-	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{client}}
+	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{Client: client}}
 	if _, err := svc.Reconcile(context.Background(), in); status.Code(err) != codes.FailedPrecondition {
 		t.Fatal(err)
 	}

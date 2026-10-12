@@ -95,7 +95,7 @@ func TestPreinstalledDatabaseAdoptionRecoversPartialMetadataFailure(t *testing.T
 		}
 		return false, nil, nil
 	})
-	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{client}, Releases: source}
+	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{Client: client}, Releases: source}
 	out, err := svc.Reconcile(ctx, in)
 	if err != nil || out.Status != "running" || len(client.Actions()) != 0 {
 		t.Fatal("side effect before durable acceptance", out, err)
@@ -113,7 +113,7 @@ func TestPreinstalledDatabaseAdoptionRecoversPartialMetadataFailure(t *testing.T
 		t.Fatal("partial progress missing", err)
 	}
 	// A fresh service object has no memory of the interrupted request.
-	svc = &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{client}, Releases: source}
+	svc = &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{"test-app@1.0.0": app}, Driver: &Kubernetes{Client: client}, Releases: source}
 	in.RequestId = "new-trace-after-process-replacement"
 	out, err = svc.Reconcile(ctx, in)
 	if err != nil || out.Status != "succeeded" {

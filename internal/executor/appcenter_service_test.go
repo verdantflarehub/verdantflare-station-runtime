@@ -22,7 +22,7 @@ func TestAppCenterRuntimeDatabaseDurableRecovery(t *testing.T) {
 	client := fake.NewSimpleClientset()
 	ctx := context.Background()
 	newService := func() *Service {
-		return &Service{Pool: pool, StationID: command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{client}}
+		return &Service{Pool: pool, StationID: command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}}
 	}
 	svc := newService()
 	out, err := svc.ReconcileBound(ctx, r)
@@ -89,7 +89,7 @@ func TestAppCenterRuntimeDatabaseConflictAndTemplate(t *testing.T) {
 			r.Command = command
 			command.InstallationId = uuid.Must(uuid.NewV7()).String()
 			client := fake.NewSimpleClientset()
-			svc := &Service{Pool: pool, StationID: command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{client}}
+			svc := &Service{Pool: pool, StationID: command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}}
 			ctx := context.Background()
 			if variant == "existing-before-accept" {
 				client.Tracker().Add(app.Deployment.DeepCopy())

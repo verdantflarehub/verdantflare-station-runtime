@@ -46,7 +46,7 @@ func TestAppCenterInspectionReadOnlyInstall(t *testing.T) {
 			case "unsupported-action":
 				in.Action = "restart"
 			}
-			svc := &Service{StationID: request.Command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{client}}
+			svc := &Service{StationID: request.Command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}}
 			out, err := svc.InspectBound(context.Background(), in)
 			if variant == "absent" {
 				if err != nil || out.State != "absent" || out.WorkloadUid != "" || out.TemplateDigest != in.TemplateDigest {
@@ -91,7 +91,7 @@ func TestAppCenterInspectionStartOwnershipAndState(t *testing.T) {
 			if variant != "missing" {
 				client.Tracker().Add(live)
 			}
-			svc := &Service{StationID: in.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{client}}
+			svc := &Service{StationID: in.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}}
 			out, err := svc.InspectBound(context.Background(), in)
 			if variant == "stopped" {
 				if err != nil || out.State != "stopped" || out.WorkloadUid != string(live.UID) {

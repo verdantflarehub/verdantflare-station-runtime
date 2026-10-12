@@ -12,11 +12,13 @@ import (
 )
 
 type maintenanceRegistration struct {
-	Snapshot ManagementRelease `json:"snapshot"`
-	Images   map[string]string `json:"images"`
-	Service  string            `json:"service"`
-	Port     int32             `json:"port"`
-	TokenEnv string            `json:"maintenance_token_env"`
+	Snapshot  ManagementRelease `json:"snapshot"`
+	Images    map[string]string `json:"images"`
+	Service   string            `json:"service"`
+	Port      int32             `json:"port"`
+	TokenEnv  string            `json:"maintenance_token_env"`
+	Transport string            `json:"transport,omitempty"`
+	Container string            `json:"container,omitempty"`
 }
 
 var managementTokenEnv = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
@@ -70,7 +72,7 @@ func LoadManagementMaintenance(path, controlToken string, lookup func(string) st
 	for _, entry := range registry.Releases {
 		s := entry.Snapshot
 		target, exists := targets[s.AppID+"@"+s.AppVersion]
-		if !exists || target.Deployment == nil || !oneReplica(target.Deployment) || len(target.InstallationBindings) == 0 || !validManagementRelease(s) || s.TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) || !validName(entry.Service) || entry.Port < 1 || entry.Port > 65535 || !managementTokenEnv.MatchString(entry.TokenEnv) ||
+		if !exists || target.Deployment == nil || !oneReplica(target.Deployment) || len(target.InstallationBindings) == 0 || !validManagementRelease(s) || s.TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) || !validName(entry.Service) || entry.Port < 1 || entry.Port > 65535 ||
 			versions[s.AppID+"@"+s.AppVersion] || refs[s.ReleaseRef] {
 			return nil, ErrManagementReplacement
 		}
@@ -78,11 +80,22 @@ func LoadManagementMaintenance(path, controlToken string, lookup func(string) st
 			return nil, ErrManagementReplacement
 		}
 		versions[s.AppID+"@"+s.AppVersion], refs[s.ReleaseRef] = true, true
-		token := lookup(entry.TokenEnv)
-		if !validManagementToken(token) || token == controlToken || (tokenApps[token] != "" && tokenApps[token] != s.AppID) {
+		config := ManagementMaintenanceRelease{Snapshot: s, Images: entry.Images, Service: entry.Service, Port: entry.Port, Transport: entry.Transport, Container: entry.Container}
+		if entry.Transport != legacyComfyTransport {
+			if !managementTokenEnv.MatchString(entry.TokenEnv) {
+				return nil, ErrManagementReplacement
+			}
+			config.Token = lookup(entry.TokenEnv)
+			if config.Token == controlToken || (tokenApps[config.Token] != "" && tokenApps[config.Token] != s.AppID) {
+				return nil, ErrManagementReplacement
+			}
+			tokenApps[config.Token] = s.AppID
+		} else if entry.TokenEnv != "" || k.maintenanceExec == nil {
 			return nil, ErrManagementReplacement
 		}
-		tokenApps[token] = s.AppID
+		if !validMaintenanceTransport(config, target) {
+			return nil, ErrManagementReplacement
+		}
 		containers := append([]corev1.Container{}, target.Deployment.Spec.Template.Spec.Containers...)
 		containers = append(containers, target.Deployment.Spec.Template.Spec.InitContainers...)
 		if len(entry.Images) != len(containers) || len(containers) == 0 {
@@ -107,7 +120,7 @@ func LoadManagementMaintenance(path, controlToken string, lookup func(string) st
 		if !found {
 			return nil, ErrManagementReplacement
 		}
-		releases[s.ReleaseDigest] = ManagementMaintenanceRelease{Snapshot: s, Images: entry.Images, Service: entry.Service, Port: entry.Port, Token: token}
+		releases[s.ReleaseDigest] = config
 	}
 	return NewHTTPManagementMaintenance(k, targets, releases), nil
 }
