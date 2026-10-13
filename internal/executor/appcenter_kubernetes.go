@@ -20,7 +20,7 @@ func appCenterWorkloadMatches(t Target, live *appsv1.Deployment, action, operati
 	if action == "install" {
 		return live.Annotations[appCenterOperationKey] == operation
 	}
-	return action == "start" && string(live.UID) == t.ExpectedUID
+	return (action == "start" || action == "stop" || action == "restart") && string(live.UID) == t.ExpectedUID
 }
 
 func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, operation, station, org string) bool {
@@ -31,7 +31,8 @@ func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, ope
 func (k *Kubernetes) CheckAppCenter(ctx context.Context, t Target, action, operation, station, org string, first bool) error {
 	conflict := status.Error(codes.FailedPrecondition, "Protected workload identity or ownership changed")
 	if !t.AppCenter || (t.InstallationID == "" && !(first && action == "install")) || t.Deployment == nil ||
-		(action != "install" && action != "start") || (action == "start" && t.ExpectedUID == "") {
+		(action != "install" && action != "start" && action != "stop" && action != "restart") ||
+		((action == "start" || action == "stop" || action == "restart") && t.ExpectedUID == "") {
 		return conflict
 	}
 	live, err := k.Client.AppsV1().Deployments(t.Deployment.Namespace).Get(ctx, t.Deployment.Name, metav1.GetOptions{})

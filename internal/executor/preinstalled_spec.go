@@ -101,7 +101,11 @@ func normalizePreinstalledDeployment(spec map[string]any) {
 		defaultValue(rolling, "maxUnavailable", "25%")
 		defaultValue(rolling, "maxSurge", "25%")
 	}
-	normalizePreinstalledPod(objectAt(objectAt(spec, "template"), "spec"))
+	template := objectAt(spec, "template")
+	if metadata, ok := template["metadata"].(map[string]any); ok {
+		delete(metadata, "annotations")
+	}
+	normalizePreinstalledPod(objectAt(template, "spec"))
 }
 func preinstalledDeploymentCompatible(want, live *appsv1.Deployment) bool {
 	if preinstalledDeploymentExact(want, live) {

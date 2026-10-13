@@ -72,11 +72,22 @@ func TestAppCenterGuardValidationAndHash(t *testing.T) {
 			t.Fatal("invalid guard accepted")
 		}
 	}
-	for _, action := range []string{"adopt", "stop", "restart", "delete", "upgrade", "rollback"} {
+	for _, action := range []string{"adopt", "delete", "upgrade", "rollback"} {
 		v := proto.Clone(r).(*pb.AppCenterRequest)
 		v.Command.Action = action
 		if status.Code(validateAppCenterRequest(v)) != codes.FailedPrecondition {
 			t.Fatal("unsupported guard action accepted", action)
+		}
+	}
+	for _, action := range []string{"stop", "restart"} {
+		v := proto.Clone(r).(*pb.AppCenterRequest)
+		v.Command.Action = action
+		if status.Code(validateAppCenterRequest(v)) != codes.InvalidArgument {
+			t.Fatal("missing workload uid accepted for", action)
+		}
+		v.Guard.WorkloadUid = uuid.NewString()
+		if err := validateAppCenterRequest(v); err != nil {
+			t.Fatal("valid request rejected for", action, err)
 		}
 	}
 	bound, err := bindAppCenterTarget(app, r.Command, r.Guard)
@@ -195,5 +206,76 @@ func TestAppCenterKubernetesStartIdentity(t *testing.T) {
 				assertAppCenterReadsOnly(t, c)
 			}
 		})
+	}
+}
+
+func TestAppCenterKubernetesStopAndRestart(t *testing.T) {
+	r, app := protectedFixture()
+	r.Command.Action, r.Guard.WorkloadUid = "stop", uuid.NewString()
+	app, _ = bindAppCenterTarget(app, r.Command, r.Guard)
+	live := app.Deployment.DeepCopy()
+	live.UID, live.ResourceVersion = types.UID(r.Guard.WorkloadUid), "7"
+	one := int32(1)
+	live.Spec.Replicas = &one
+	live.Generation = 2
+	live.Status.ObservedGeneration = 2
+	live.Status.Replicas = 1
+	live.Status.AvailableReplicas = 1
+	mark(&live.ObjectMeta, app, r.Command.StationId, r.Command.OrganizationId)
+
+	c := fake.NewSimpleClientset(live)
+	driver := &Kubernetes{Client: c}
+	ctx := context.Background()
+
+	// 1. Initial stop: scales to 0, returns running/stopping
+	out, err := driver.Step(ctx, app, "stop", r.Command.OperationId, r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "running" || out.Phase != "stopping" {
+		t.Fatal("initial stop failed", out, err)
+	}
+	updated, _ := c.AppsV1().Deployments(live.Namespace).Get(ctx, live.Name, metav1.GetOptions{})
+	if *updated.Spec.Replicas != 0 {
+		t.Fatal("replicas not scaled to 0")
+	}
+
+	// 2. Stop progressing (replicas still stopping)
+	updated.Status.Replicas = 1
+	out, err = driver.Step(ctx, app, "stop", r.Command.OperationId, r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "running" || out.Phase != "stopping" {
+		t.Fatal("in-progress stop failed", out, err)
+	}
+
+	// 3. Stop complete (replicas = 0, observed)
+	updated.Status.Replicas = 0
+	updated.Status.ObservedGeneration = updated.Generation
+	c.AppsV1().Deployments(live.Namespace).Update(ctx, updated, metav1.UpdateOptions{})
+	out, err = driver.Step(ctx, app, "stop", r.Command.OperationId, r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "succeeded" || out.Phase != "completed" {
+		t.Fatal("completed stop failed", out, err)
+	}
+
+	// 4. Restart: sets restart annotation
+	out, err = driver.Step(ctx, app, "restart", "op-restart", r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "running" || out.Phase != "starting" {
+		t.Fatal("initial restart failed", out, err)
+	}
+	restarted, _ := c.AppsV1().Deployments(live.Namespace).Get(ctx, live.Name, metav1.GetOptions{})
+	if restarted.Spec.Template.Annotations["station.verdantflare.com/restart-operation"] != "op-restart" {
+		t.Fatal("restart annotation missing")
+	}
+	if *restarted.Spec.Replicas != 1 {
+		t.Fatal("replicas not restored to 1 on restart")
+	}
+
+	// 5. Restart complete
+	restarted.Generation = 3
+	restarted.Status.ObservedGeneration = 3
+	restarted.Status.Replicas = 1
+	restarted.Status.UpdatedReplicas = 1
+	restarted.Status.ReadyReplicas = 1
+	restarted.Status.AvailableReplicas = 1
+	c.AppsV1().Deployments(live.Namespace).Update(ctx, restarted, metav1.UpdateOptions{})
+	out, err = driver.Step(ctx, app, "restart", "op-restart", r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "succeeded" || out.Phase != "completed" {
+		t.Fatal("completed restart failed", out, err)
 	}
 }

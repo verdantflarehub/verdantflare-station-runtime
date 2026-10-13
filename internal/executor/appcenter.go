@@ -46,7 +46,7 @@ func validateAppCenterRequest(in *pb.AppCenterRequest) error {
 		if g.WorkloadUid != "" {
 			return invalid
 		}
-	case "start":
+	case "start", "stop", "restart":
 		uid, err := uuid.Parse(g.WorkloadUid)
 		if err != nil || uid == uuid.Nil || uid.String() != g.WorkloadUid {
 			return invalid

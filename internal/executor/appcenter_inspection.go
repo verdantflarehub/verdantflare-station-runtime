@@ -37,7 +37,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		if in.InstallationId != "" {
 			return nil, invalid
 		}
-	case "start":
+	case "start", "stop", "restart":
 		id, err := uuid.Parse(in.InstallationId)
 		if err != nil || id.Version() != 7 || id.String() != in.InstallationId {
 			return nil, invalid
@@ -51,7 +51,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		t.DiskBytes > 0 || t.GPU > 0 || len(t.Models) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "Protected execution template or preparation support unavailable")
 	}
-	if in.Action == "start" {
+	if in.Action == "start" || in.Action == "stop" || in.Action == "restart" {
 		var err error
 		t, err = bindInstallation(t, &pb.AppRequest{InstallationId: in.InstallationId, StationId: in.StationId, OrganizationId: in.OrganizationId, AppId: in.AppId, AppVersion: in.AppVersion})
 		if err != nil {
@@ -80,15 +80,41 @@ func (k *Kubernetes) InspectAppCenter(ctx context.Context, t Target, action, sta
 	} else if err != nil {
 		return nil, status.Error(codes.Unavailable, "Workload observation unavailable")
 	} else {
-		if action != "start" {
+		if action == "install" {
 			return nil, status.Error(codes.FailedPrecondition, "Install requires an absent workload")
 		}
 		id, e := uuid.Parse(string(live.UID))
-		if e != nil || id == uuid.Nil || id.String() != string(live.UID) || live.Spec.Replicas == nil || *live.Spec.Replicas != 0 ||
-			live.Status.ObservedGeneration < live.Generation || live.Status.Replicas != 0 {
-			return nil, status.Error(codes.FailedPrecondition, "Start requires an observed stopped workload")
+		if e != nil || id == uuid.Nil || id.String() != string(live.UID) {
+			return nil, status.Error(codes.FailedPrecondition, "Workload has invalid identity")
 		}
-		t.ExpectedUID, out.WorkloadUid, out.State = string(live.UID), string(live.UID), "stopped"
+		isStopped := live.Spec.Replicas != nil && *live.Spec.Replicas == 0 &&
+			live.Status.ObservedGeneration >= live.Generation && live.Status.Replicas == 0
+		isRunning := live.Spec.Replicas != nil && *live.Spec.Replicas > 0 &&
+			live.Status.ObservedGeneration >= live.Generation && live.Status.AvailableReplicas > 0
+		switch action {
+		case "start":
+			if !isStopped {
+				return nil, status.Error(codes.FailedPrecondition, "Start requires an observed stopped workload")
+			}
+			out.State = "stopped"
+		case "stop":
+			if !isRunning {
+				return nil, status.Error(codes.FailedPrecondition, "Stop requires an observed running workload")
+			}
+			out.State = "running"
+		case "restart":
+			if !isRunning && !isStopped {
+				return nil, status.Error(codes.FailedPrecondition, "Restart requires an observed running or stopped workload")
+			}
+			if isRunning {
+				out.State = "running"
+			} else {
+				out.State = "stopped"
+			}
+		default:
+			return nil, status.Error(codes.FailedPrecondition, "Action has no protected execution support")
+		}
+		t.ExpectedUID, out.WorkloadUid = string(live.UID), string(live.UID)
 	}
 	if err := k.CheckAppCenter(ctx, t, action, "", station, org, true); err != nil {
 		return nil, err

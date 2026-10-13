@@ -99,8 +99,8 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
 		}
 	}
-	// No task/lease API exists yet: disruptive commands must fail closed.
-	if action == "stop" || action == "restart" || action == "delete" {
+	// Disruptive commands without protected execution fail closed.
+	if (!t.AppCenter && (action == "stop" || action == "restart" || action == "delete")) || (t.AppCenter && action == "delete") {
 		return activityGuard(ctx, t), nil
 	}
 	if action != "adopt" && t.DiskBytes > 0 {
@@ -170,6 +170,49 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	}
 	if !sameImages(live, t.Deployment) {
 		return failed("CONFLICT", "Workload images differ from the registered version"), nil
+	}
+	if action == "stop" {
+		if live.Spec.Replicas != nil && *live.Spec.Replicas == 0 {
+			if live.Status.ObservedGeneration >= live.Generation && live.Status.Replicas == 0 {
+				return Result{"succeeded", "completed", "", ""}, nil
+			}
+			return Result{"running", "stopping", "", ""}, nil
+		}
+		zero := int32(0)
+		live.Spec.Replicas = &zero
+		_, err = deployments.Update(ctx, live, metav1.UpdateOptions{})
+		return Result{"running", "stopping", "", ""}, err
+	}
+	if action == "restart" {
+		const appCenterRestartKey = "station.verdantflare.com/restart-operation"
+		desired := int32(1)
+		if t.Deployment.Spec.Replicas != nil && *t.Deployment.Spec.Replicas > 0 {
+			desired = *t.Deployment.Spec.Replicas
+		}
+		if live.Spec.Template.Annotations == nil {
+			live.Spec.Template.Annotations = map[string]string{}
+		}
+		needsRestart := live.Spec.Template.Annotations[appCenterRestartKey] != operation
+		needsScale := live.Spec.Replicas == nil || *live.Spec.Replicas != desired
+		if needsRestart || needsScale {
+			live.Spec.Template.Annotations[appCenterRestartKey] = operation
+			live.Spec.Replicas = &desired
+			_, err = deployments.Update(ctx, live, metav1.UpdateOptions{})
+			return Result{"running", "starting", "", ""}, err
+		}
+		for _, c := range live.Status.Conditions {
+			if c.Type == appsv1.DeploymentProgressing && c.Status == corev1.ConditionFalse && c.Reason == "ProgressDeadlineExceeded" || c.Type == appsv1.DeploymentReplicaFailure && c.Status == corev1.ConditionTrue {
+				return Result{"failed", "starting", "SERVICE_UNAVAILABLE", "Deployment failed to become ready"}, nil
+			}
+		}
+		if live.Status.ObservedGeneration >= live.Generation &&
+			live.Status.Replicas == desired &&
+			live.Status.UpdatedReplicas == desired &&
+			live.Status.ReadyReplicas == desired &&
+			live.Status.AvailableReplicas == desired {
+			return Result{"succeeded", "completed", "", ""}, nil
+		}
+		return Result{"running", "starting", "", ""}, nil
 	}
 	if live.Spec.Replicas != nil && *live.Spec.Replicas == 0 {
 		live.Spec.Replicas = t.Deployment.Spec.Replicas
