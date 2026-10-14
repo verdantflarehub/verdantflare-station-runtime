@@ -82,15 +82,22 @@ func TestWorkspacesAndReleaseRetainedVolume(t *testing.T) {
 		PVCName:        s.Profiles[start.ProfileID].Claims[0],
 	}
 	out, err := s.ReleaseWorkspace(ctx, releaseReq)
-	if err != nil || !cleaned || out.State != "available" || out.InstanceID != "" {
-		t.Fatalf("expected available workspace after release, got %+v cleaned=%v err=%v", out, cleaned, err)
+	if err != nil || !cleaned || out.State != "released" || out.InstanceID != "" {
+		t.Fatalf("expected released workspace after release, got %+v cleaned=%v err=%v", out, cleaned, err)
 	}
-	pvc, err := client.CoreV1().PersistentVolumeClaims(releaseReq.Namespace).Get(ctx, releaseReq.PVCName, metav1.GetOptions{})
-	if err != nil || pvc.Annotations[instanceKey] != "" {
-		t.Fatalf("expected PVC annotations cleared, got %+v err=%v", pvc, err)
+	if _, err := client.CoreV1().PersistentVolumeClaims(releaseReq.Namespace).Get(ctx, releaseReq.PVCName, metav1.GetOptions{}); err == nil {
+		t.Fatalf("expected PVC to be deleted after release")
+	}
+	pv, err := client.CoreV1().PersistentVolumes().Get(ctx, out.PVName, metav1.GetOptions{})
+	if err != nil || pv.Spec.ClaimRef != nil || pv.Status.Phase != corev1.VolumeAvailable {
+		t.Fatalf("expected PV claimRef cleared and status Available, got %+v err=%v", pv, err)
+	}
+	afterList, err := s.Workspaces(ctx)
+	if err != nil || len(afterList) != 0 {
+		t.Fatalf("expected 0 workspaces in table after PVC deleted, got %+v err=%v", afterList, err)
 	}
 
-	// Verify a new instance can now reserve the released workspace
+	// Verify a new instance can now reserve the released workspace (recreating the pool PVC automatically)
 	create := start.identity()
 	create.InstanceID = uuid.NewString()
 	create.CreateOperationID = uuid.NewString()

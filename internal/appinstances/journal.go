@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
 	"k8s.io/client-go/kubernetes"
 )
@@ -194,6 +195,12 @@ func (j *Journal) reserve(ctx context.Context, tx pgx.Tx, in Run, p Profile) (Vo
 			continue
 		}
 		b, e := InspectVolume(ctx, j.Client, in.Identity, p, claim, nil, nil)
+		if errors.Is(e, ErrCapacity) {
+			if err := instances.EnsurePoolClaim(ctx, j.Client, in.StationID, p.Namespace, p.Pool, claim); err != nil {
+				return Volume{}, err
+			}
+			b, e = InspectVolume(ctx, j.Client, in.Identity, p, claim, nil, nil)
+		}
 		if errors.Is(e, ErrBinding) || errors.Is(e, ErrBusy) || errors.Is(e, ErrCapacity) {
 			continue
 		}

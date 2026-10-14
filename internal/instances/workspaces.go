@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 )
@@ -282,6 +283,7 @@ func (s *Service) Workspaces(ctx context.Context) ([]WorkspaceVolume, error) {
 				if r.RetainedAt != nil || (r.LastAction == "destroy" && r.LastStatus == "succeeded") {
 					item.State = "retained"
 					item.AllowedActions = []string{"release"}
+					item.InstanceName = "Blender 历史实例（已销毁）"
 					if r.RetainedAt != nil {
 						item.RetainedAt = r.RetainedAt.UTC().Format(time.RFC3339)
 					}
@@ -305,10 +307,26 @@ func (s *Service) Workspaces(ctx context.Context) ([]WorkspaceVolume, error) {
 					item.State = "retained"
 					item.RetainedAt = retainedAt
 					item.AllowedActions = []string{"release"}
+					item.InstanceName = item.AppDisplayName + " 实例（已销毁）"
 				} else if a.HasActiveStart || mountedClaims[pvc.Name] {
 					item.State = "in_use"
 				} else {
 					item.State = "bound_stopped"
+				}
+			} else if mountedClaims[pvc.Name] {
+				item.State = "in_use"
+			} else {
+				item.State = "retained"
+				item.AllowedActions = []string{"release"}
+				item.InstanceID = pvc.Annotations[instanceKey]
+				item.OrganizationID = pvc.Annotations[organizationKey]
+				item.ProjectID = pvc.Annotations[projectKey]
+				item.InstallationID = pvc.Annotations["station.verdantflare.com/installation-id"]
+				item.RetainedAt = pvc.Annotations["station.verdantflare.com/retained-at"]
+				if item.AppID == "blender" {
+					item.InstanceName = "Blender 历史实例（已销毁）"
+				} else {
+					item.InstanceName = item.AppDisplayName + " 实例（已销毁）"
 				}
 			}
 
@@ -360,7 +378,7 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 	}
 
 	// Pre-check DB binding state before running disk cleanup.
-	preKind, preInstanceID, preNode, err := s.inspectWorkspaceBinding(ctx, in.Namespace, in.PVCName)
+	_, preInstanceID, preNode, err := s.inspectWorkspaceBinding(ctx, in.Namespace, in.PVCName)
 	if err != nil {
 		return WorkspaceVolume{}, err
 	}
@@ -368,7 +386,7 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 		nodeName = preNode
 	}
 
-	if preKind != "" && s.WorkspaceCleaner != nil {
+	if s.WorkspaceCleaner != nil {
 		if err := s.WorkspaceCleaner(ctx, in.Namespace, in.PVCName, nodeName); err != nil {
 			return WorkspaceVolume{}, err
 		}
@@ -420,9 +438,6 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 	if pvc.Labels[stationKey] != s.StationID || pvc.Labels[poolKey] == "" {
 		return WorkspaceVolume{}, ErrBinding
 	}
-	if err := clearPVCStationAnnotations(ctx, s.Client, pvc); err != nil {
-		return WorkspaceVolume{}, err
-	}
 
 	switch kind {
 	case "runtime":
@@ -447,6 +462,7 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 		return WorkspaceVolume{}, err
 	}
 
+	pvName := pvc.Spec.VolumeName
 	pool := pvc.Labels[poolKey]
 	storageBytes := pvc.Status.Capacity.Storage().Value()
 	if storageBytes <= 0 {
@@ -458,11 +474,31 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 	if storageClass == "" {
 		storageClass = "local-nvme"
 	}
+
+	if err := s.Client.CoreV1().PersistentVolumeClaims(in.Namespace).Delete(ctx, in.PVCName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return WorkspaceVolume{}, err
+	}
+	for range 50 {
+		if _, err := s.Client.CoreV1().PersistentVolumeClaims(in.Namespace).Get(ctx, in.PVCName, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return WorkspaceVolume{}, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	if pvName != "" {
+		if err := releasePVClaimRef(ctx, s.Client, pvName); err != nil {
+			return WorkspaceVolume{}, err
+		}
+	}
+
 	appID, appDisplay := inferAppMeta(in.Namespace, pool, "")
 	return WorkspaceVolume{
 		WorkspaceID:    in.Namespace + "/" + in.PVCName,
 		PVCName:        in.PVCName,
-		PVName:         pvc.Spec.VolumeName,
+		PVName:         pvName,
 		Namespace:      in.Namespace,
 		PoolName:       pool,
 		AppID:          appID,
@@ -471,7 +507,7 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 		StorageClass:   storageClass,
 		AccessMode:     "RWO",
 		NodeName:       nodeName,
-		State:          "available",
+		State:          "released",
 		AllowedActions: []string{},
 	}, nil
 }
@@ -590,25 +626,135 @@ func (s *Service) lockAndValidateRelease(ctx context.Context, tx pgx.Tx, namespa
 	return "", "", "", err
 }
 
-func clearPVCStationAnnotations(ctx context.Context, client kubernetes.Interface, pvc *corev1.PersistentVolumeClaim) error {
-	changed := false
-	for k := range pvc.Annotations {
-		if strings.HasPrefix(k, "station.verdantflare.com/") {
-			changed = true
-			break
-		}
-	}
-	if !changed {
+func releasePVClaimRef(ctx context.Context, client kubernetes.Interface, pvName string) error {
+	pv, err := client.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
 		return nil
 	}
-	next := pvc.DeepCopy()
+	if err != nil {
+		return err
+	}
+	next := pv.DeepCopy()
+	next.Spec.ClaimRef = nil
 	for k := range next.Annotations {
 		if strings.HasPrefix(k, "station.verdantflare.com/") {
 			delete(next.Annotations, k)
 		}
 	}
-	_, err := client.CoreV1().PersistentVolumeClaims(pvc.Namespace).Update(ctx, next, metav1.UpdateOptions{})
-	return err
+	next.Status.Phase = corev1.VolumeAvailable
+	updated, err := client.CoreV1().PersistentVolumes().Update(ctx, next, metav1.UpdateOptions{})
+	if err != nil {
+		return err
+	}
+	if updated.Status.Phase != corev1.VolumeAvailable {
+		statusCopy := updated.DeepCopy()
+		statusCopy.Status.Phase = corev1.VolumeAvailable
+		_, _ = client.CoreV1().PersistentVolumes().UpdateStatus(ctx, statusCopy, metav1.UpdateOptions{})
+	}
+	return nil
+}
+
+func EnsurePoolClaim(ctx context.Context, client kubernetes.Interface, stationID, namespace, pool, claim string) error {
+	if client == nil || stationID == "" || namespace == "" || pool == "" || claim == "" {
+		return nil
+	}
+	if _, err := client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, claim, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		return err
+	}
+	var pv *corev1.PersistentVolume
+	for _, pvName := range []string{"pv-" + claim, claim} {
+		candidate, err := client.CoreV1().PersistentVolumes().Get(ctx, pvName, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if candidate.DeletionTimestamp == nil &&
+			candidate.Labels[stationKey] == stationID &&
+			candidate.Labels[poolKey] == pool &&
+			(candidate.Spec.ClaimRef == nil || (candidate.Spec.ClaimRef.Namespace == namespace && candidate.Spec.ClaimRef.Name == claim && candidate.Status.Phase != corev1.VolumeBound)) {
+			pv = candidate
+			break
+		}
+	}
+	if pv == nil {
+		return nil
+	}
+	mode := corev1.PersistentVolumeFilesystem
+	if pv.Spec.VolumeMode != nil {
+		mode = *pv.Spec.VolumeMode
+	}
+	sc := pv.Spec.StorageClassName
+	capQty := pv.Spec.Capacity[corev1.ResourceStorage]
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      claim,
+			Namespace: namespace,
+			Labels: map[string]string{
+				stationKey: stationID,
+				poolKey:    pool,
+			},
+		},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			VolumeMode:       &mode,
+			StorageClassName: &sc,
+			VolumeName:       pv.Name,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{
+					corev1.ResourceStorage: capQty,
+				},
+			},
+		},
+		Status: corev1.PersistentVolumeClaimStatus{
+			Phase:    corev1.ClaimBound,
+			Capacity: corev1.ResourceList{corev1.ResourceStorage: capQty},
+		},
+	}
+	created, err := client.CoreV1().PersistentVolumeClaims(namespace).Create(ctx, pvc, metav1.CreateOptions{})
+	if err != nil {
+		return err
+	}
+	if created.UID == "" {
+		created = created.DeepCopy()
+		created.UID = types.UID(uuid.NewString())
+		if created.ResourceVersion == "" {
+			created.ResourceVersion = "1"
+		}
+		created.Status.Phase = corev1.ClaimBound
+		created.Status.Capacity = corev1.ResourceList{corev1.ResourceStorage: capQty}
+		if updated, uErr := client.CoreV1().PersistentVolumeClaims(namespace).Update(ctx, created, metav1.UpdateOptions{}); uErr == nil {
+			created = updated
+		}
+	}
+	nextPV := pv.DeepCopy()
+	nextPV.Spec.ClaimRef = &corev1.ObjectReference{
+		Namespace: created.Namespace,
+		Name:      created.Name,
+		UID:       created.UID,
+	}
+	nextPV.Status.Phase = corev1.VolumeBound
+	if updatedPV, uErr := client.CoreV1().PersistentVolumes().Update(ctx, nextPV, metav1.UpdateOptions{}); uErr == nil {
+		if updatedPV.Status.Phase != corev1.VolumeBound {
+			statusPV := updatedPV.DeepCopy()
+			statusPV.Status.Phase = corev1.VolumeBound
+			_, _ = client.CoreV1().PersistentVolumes().UpdateStatus(ctx, statusPV, metav1.UpdateOptions{})
+		}
+	}
+	for range 30 {
+		curPVC, err1 := client.CoreV1().PersistentVolumeClaims(namespace).Get(ctx, claim, metav1.GetOptions{})
+		curPV, err2 := client.CoreV1().PersistentVolumes().Get(ctx, pv.Name, metav1.GetOptions{})
+		if err1 == nil && err2 == nil && curPVC.Status.Phase == corev1.ClaimBound && curPV.Status.Phase == corev1.VolumeBound {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return nil
 }
 
 func CleanWorkspacePod(ctx context.Context, client kubernetes.Interface, namespace, pvcName, nodeName, image string, runAsUser int64) error {
@@ -721,3 +867,4 @@ func CleanWorkspacePod(ctx context.Context, client kubernetes.Interface, namespa
 		}
 	}
 }
+

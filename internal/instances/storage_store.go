@@ -73,6 +73,12 @@ func (s *WorkspaceStore) reserve(ctx context.Context, tx pgx.Tx, in Identity, p 
 			continue
 		}
 		b, e := Inspect(ctx, s.Client, in, p, claim, nil, nil)
+		if errors.Is(e, ErrCapacity) {
+			if err := EnsurePoolClaim(ctx, s.Client, in.StationID, p.Namespace, p.Pool, claim); err != nil {
+				return VolumeBinding{}, err
+			}
+			b, e = Inspect(ctx, s.Client, in, p, claim, nil, nil)
+		}
 		if errors.Is(e, ErrCapacity) || errors.Is(e, ErrBusy) || errors.Is(e, ErrBinding) {
 			continue
 		}
