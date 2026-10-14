@@ -26,11 +26,12 @@ var ErrManagementBusy = errors.New("MANAGEMENT_TRANSITION_BUSY")
 // terminal upgrade result. Release requires Core's durable publication and
 // a separate, direction-bound journal barrier.
 type ManagementJournal struct {
-	Pool        *pgxpool.Pool
-	StationID   string
-	Targets     map[string]Target
-	Kubernetes  *Kubernetes
-	Maintenance ManagementMaintenance
+	Pool          *pgxpool.Pool
+	StationID     string
+	Targets       map[string]Target
+	Kubernetes    *Kubernetes
+	Maintenance   ManagementMaintenance
+	stoppedChecks stoppedChecker
 }
 
 // Implementations must bind the actual management image, installation and
@@ -60,6 +61,8 @@ type ManagementRelease struct {
 	DataContract             string   `json:"data_contract"`
 	DefaultWorkerVersion     string   `json:"default_worker_version"`
 	CompatibleWorkerVersions []string `json:"compatible_worker_versions"`
+	ReleaseKind              string   `json:"release_kind,omitempty"`
+	AppImageDigest           string   `json:"app_image_digest,omitempty"`
 }
 
 type ManagementBinding struct {
@@ -157,7 +160,7 @@ func (j *ManagementJournal) Release(ctx context.Context, operation string, targe
 
 func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode, expectedDigest string) (ManagementProgress, error) {
 	var empty ManagementProgress
-	if j == nil || j.Pool == nil || j.Kubernetes == nil || j.Maintenance == nil || !managementID(operation) || !managementID(j.StationID) {
+	if j == nil || j.Pool == nil || j.Kubernetes == nil || !managementID(operation) || !managementID(j.StationID) {
 		return empty, ErrManagementReplacement
 	}
 	tx, err := j.Pool.Begin(ctx)
@@ -206,7 +209,12 @@ func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode, expe
 	if !ok || !targetOK || b.Source.TemplateDigest != "sha256:"+hex.EncodeToString(source.Hash[:]) || b.Target.TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) {
 		return empty, ErrManagementReplacement
 	}
-	driver, err := NewManagementReplacement(j.Kubernetes, source, target, &pb.AppRequest{OperationId: operation, InstallationId: b.InstallationID, StationId: b.StationID, OrganizationId: b.OrganizationID, UserId: b.UserID, AppId: app, AppVersion: b.Source.AppVersion})
+	stopped := b.Source.ReleaseKind == "dashboard-release" && b.Target.ReleaseKind == "dashboard-release"
+	if (!stopped && j.Maintenance == nil) || (b.Source.ReleaseKind != b.Target.ReleaseKind) || (b.Source.ReleaseKind != "" && !stopped) ||
+		(stopped && (!validManagementRelease(b.Source) || !validManagementRelease(b.Target) || app != "higgsfield")) {
+		return empty, ErrManagementReplacement
+	}
+	driver, err := newManagementReplacement(j.Kubernetes, source, target, &pb.AppRequest{OperationId: operation, InstallationId: b.InstallationID, StationId: b.StationID, OrganizationId: b.OrganizationID, UserId: b.UserID, AppId: app, AppVersion: b.Source.AppVersion}, stopped)
 	if err != nil {
 		return empty, err
 	}
@@ -239,7 +247,13 @@ func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode, expe
 		return empty, ErrManagementReplacement
 	}
 	var next managementRecord
-	if releasing {
+	if stopped {
+		checks := j.stoppedChecks
+		if checks == nil {
+			checks = newStoppedChecks()
+		}
+		next, err = advanceStopped(ctx, r, b, &StoppedReplacement{driver}, checks, mode)
+	} else if releasing {
 		next, err = advanceManagementRelease(ctx, r, b, j.Maintenance, mode == "release_target")
 	} else {
 		next, err = advanceManagement(ctx, r, b, driver, j.Maintenance, restore)

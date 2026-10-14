@@ -26,14 +26,19 @@ var managementReleaseName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 var managementVersion = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
 func validManagementRelease(s ManagementRelease) bool {
-	if !managementReleaseName.MatchString(s.AppID) || !managementVersion.MatchString(s.AppVersion) || !managementReleaseName.MatchString(s.ReleaseRef) || !managementReleaseName.MatchString(s.DataContract) ||
-		len(s.CompatibleWorkerVersions) == 0 || len(s.CompatibleWorkerVersions) > 128 || !slices.Contains(s.CompatibleWorkerVersions, s.DefaultWorkerVersion) {
+	if !managementReleaseName.MatchString(s.AppID) || !managementVersion.MatchString(s.AppVersion) || len(s.AppVersion) > 64 || !managementReleaseName.MatchString(s.ReleaseRef) {
 		return false
 	}
 	for _, digest := range []string{s.ReleaseDigest, s.ManifestDigest, s.TemplateDigest, s.DashboardDigest} {
 		if !managementDigest.MatchString(digest) {
 			return false
 		}
+	}
+	if s.ReleaseKind == "dashboard-release" {
+		return s.DataContract == "" && s.DefaultWorkerVersion == "" && s.CompatibleWorkerVersions != nil && len(s.CompatibleWorkerVersions) == 0 && managementDigest.MatchString(s.AppImageDigest)
+	}
+	if s.ReleaseKind != "" || s.AppImageDigest != "" || !managementReleaseName.MatchString(s.DataContract) || len(s.CompatibleWorkerVersions) == 0 || len(s.CompatibleWorkerVersions) > 128 || !slices.Contains(s.CompatibleWorkerVersions, s.DefaultWorkerVersion) {
+		return false
 	}
 	seen := map[string]bool{}
 	for _, version := range s.CompatibleWorkerVersions {
@@ -48,7 +53,7 @@ func validManagementRelease(s ManagementRelease) bool {
 // The platform verifies publication provenance before mounting this registry.
 // Runtime then closes the snapshot/template/image/service/credential binding.
 func LoadManagementMaintenance(path, controlToken string, lookup func(string) string, k *Kubernetes, targets map[string]Target) (*HTTPManagementMaintenance, error) {
-	if path == "" && controlToken == "" {
+	if path == "" && (controlToken == "" || validManagementToken(controlToken)) {
 		return nil, nil
 	}
 	if path == "" || lookup == nil || k == nil || k.Client == nil || !validManagementToken(controlToken) {
@@ -71,6 +76,9 @@ func LoadManagementMaintenance(path, controlToken string, lookup func(string) st
 	tokenApps := map[string]string{}
 	for _, entry := range registry.Releases {
 		s := entry.Snapshot
+		if s.ReleaseKind != "" {
+			return nil, ErrManagementReplacement
+		} // Downtime releases do not use the maintenance registry.
 		target, exists := targets[s.AppID+"@"+s.AppVersion]
 		if !exists || target.Deployment == nil || !oneReplica(target.Deployment) || len(target.InstallationBindings) == 0 || !validManagementRelease(s) || s.TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) || !validName(entry.Service) || entry.Port < 1 || entry.Port > 65535 ||
 			versions[s.AppID+"@"+s.AppVersion] || refs[s.ReleaseRef] {

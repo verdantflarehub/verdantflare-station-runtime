@@ -76,7 +76,7 @@ func run() int {
 	}
 	transitionToken := os.Getenv("STATION_APP_TRANSITION_CONTROL_TOKEN")
 	maintenance, err := executor.LoadManagementMaintenance(os.Getenv("STATION_APP_TRANSITION_MAINTENANCE_REGISTRY"), transitionToken, os.Getenv, driver, targets)
-	if err != nil || (maintenance != nil && transitionToken == os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")) {
+	if err != nil || (transitionToken != "" && transitionToken == os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")) {
 		logger.Error("invalid_transition_maintenance_configuration")
 		return 1
 	}
@@ -133,7 +133,7 @@ func run() int {
 			return 1
 		}
 	}
-	if maintenance != nil {
+	if maintenance != nil || transitionToken != "" {
 		credentials := []string{transitionToken}
 		for _, release := range maintenance.Releases {
 			if release.Token != "" { // Legacy exec authenticates through Kubernetes, not an App token.

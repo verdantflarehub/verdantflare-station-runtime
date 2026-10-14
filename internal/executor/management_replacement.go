@@ -33,6 +33,10 @@ type ManagementReplacement struct {
 }
 
 func NewManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRequest) (*ManagementReplacement, error) {
+	return newManagementReplacement(k, source, target, in, false)
+}
+
+func newManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRequest, stopped bool) (*ManagementReplacement, error) {
 	if k == nil || k.Client == nil || in == nil {
 		return nil, ErrManagementReplacement
 	}
@@ -43,7 +47,7 @@ func NewManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 		}
 	}
 	if source.AppID != in.AppId || source.Version != in.AppVersion || target.AppID != source.AppID || target.Version == source.Version ||
-		!versionPattern.MatchString(target.Version) || len(source.InstallationBindings) == 0 || len(target.InstallationBindings) == 0 ||
+		!versionPattern.MatchString(target.Version) || (!stopped && (len(source.InstallationBindings) == 0 || len(target.InstallationBindings) == 0)) ||
 		source.Deployment == nil || target.Deployment == nil || source.Deployment.Name != target.Deployment.Name || source.Deployment.Namespace != target.Deployment.Namespace ||
 		!oneReplica(source.Deployment) || !oneReplica(target.Deployment) || source.Hash == target.Hash {
 		return nil, ErrManagementReplacement
@@ -82,6 +86,9 @@ func NewManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 	boundTarget, err := bindInstallation(target, request)
 	if err != nil {
 		return nil, ErrManagementReplacement
+	}
+	if stopped {
+		boundSource.InstallationID, boundTarget.InstallationID = in.InstallationId, in.InstallationId
 	}
 	return &ManagementReplacement{boundSource, boundTarget, in.OperationId, in.StationId, in.OrganizationId, k}, nil
 }
