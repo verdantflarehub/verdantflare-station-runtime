@@ -245,8 +245,21 @@ func run() int {
 		if instanceAddr == "" {
 			instanceAddr = "127.0.0.1:5054"
 		}
-		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}}
-		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+		cleaner := func(ctx context.Context, namespace, pvcName, nodeName string) error {
+			for _, p := range profiles {
+				if p.Namespace == namespace {
+					return instances.CleanWorkspacePod(ctx, driver.Client, namespace, pvcName, nodeName, p.Image, 1000)
+				}
+			}
+			for _, p := range appProfiles {
+				if p.Namespace == namespace {
+					return instances.CleanWorkspacePod(ctx, driver.Client, namespace, pvcName, nodeName, p.Image, p.RunAsUser)
+				}
+			}
+			return instances.ErrInvalid
+		}
+		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
+		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- instanceServer.ListenAndServe() }()
 	}
 	if stateObserver != nil {

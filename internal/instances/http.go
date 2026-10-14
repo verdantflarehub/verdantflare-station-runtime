@@ -84,11 +84,13 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	isProfiles := r.URL.Path == "/internal/v1/instances/profiles" && r.Method == "GET"
+	isWorkspaces := r.URL.Path == "/internal/v1/instances/workspaces" && r.Method == "GET"
+	isReleaseWorkspace := r.URL.Path == "/internal/v1/instances/workspaces/release" && r.Method == "POST"
 	isStart := r.URL.Path == "/internal/v1/instances/start" && r.Method == "POST"
 	isAccess := r.URL.Path == "/internal/v1/instances/access" && r.Method == "POST"
 	isStop := r.URL.Path == "/internal/v1/instances/stop" && r.Method == "POST"
 	isDestroy := r.URL.Path == "/internal/v1/instances/destroy" && r.Method == "POST"
-	if !isProfiles && !isStart && !isAccess && !isStop && !isDestroy && (r.URL.Path != "/internal/v1/instances/create" || r.Method != "POST") {
+	if !isProfiles && !isWorkspaces && !isReleaseWorkspace && !isStart && !isAccess && !isStop && !isDestroy && (r.URL.Path != "/internal/v1/instances/create" || r.Method != "POST") {
 		writeJSON(w, 404, map[string]string{"code": "NOT_FOUND"})
 		return
 	}
@@ -120,6 +122,25 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"profiles": profiles})
 		return
 	}
+	if isWorkspaces {
+		if r.URL.RawQuery != "" || r.URL.RawPath != "" {
+			writeJSON(w, 400, map[string]string{"code": "INVALID_ARGUMENT"})
+			return
+		}
+		if h.Service == nil {
+			writeJSON(w, 503, map[string]string{"code": "SERVICE_UNAVAILABLE"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		workspaces, err := h.Service.Workspaces(ctx)
+		if err != nil {
+			writeJSON(w, 503, map[string]string{"code": "SERVICE_UNAVAILABLE"})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"workspaces": workspaces})
+		return
+	}
 	media, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || media != "application/json" || r.URL.RawQuery != "" || r.URL.RawPath != "" || r.Header.Get("Content-Encoding") != "" {
 		writeJSON(w, 400, map[string]string{"code": "INVALID_ARGUMENT"})
@@ -131,6 +152,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var access AccessRequest
 	var stop StopRequest
 	var destroy DestroyRequest
+	var release ReleaseWorkspaceRequest
 	var target any = &in
 	if isStart {
 		target = &start
@@ -144,6 +166,9 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if isDestroy {
 		target = &destroy
 	}
+	if isReleaseWorkspace {
+		target = &release
+	}
 	if err != nil || decodeRequest(raw, target) != nil {
 		writeJSON(w, 400, map[string]string{"code": "INVALID_ARGUMENT"})
 		return
@@ -152,10 +177,20 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 503, map[string]string{"code": "SERVICE_UNAVAILABLE"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	timeout := 10 * time.Second
+	if isReleaseWorkspace {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 	var out any
-	if isDestroy {
+	if isReleaseWorkspace {
+		ws, releaseErr := h.Service.ReleaseWorkspace(ctx, release)
+		if releaseErr == nil {
+			out = map[string]any{"status": "released", "workspace": ws}
+		}
+		err = releaseErr
+	} else if isDestroy {
 		out, err = h.Service.Destroy(ctx, destroy)
 	} else if isStop {
 		out, err = h.Service.Stop(ctx, stop)
@@ -171,10 +206,17 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var execution *ExecutionError
 		if errors.Is(err, ErrInvalid) {
 			code, status = "INVALID_ARGUMENT", 400
+		} else if errors.Is(err, ErrNotFound) {
+			code, status = "NOT_FOUND", 404
+		} else if errors.Is(err, ErrNotDestroyed) {
+			code, status = "INSTANCE_NOT_DESTROYED", 409
 		} else if errors.Is(err, ErrConflict) {
 			code, status = "OPERATION_CONFLICT", 409
 		} else if errors.Is(err, ErrBusy) {
 			code, status = "INSTANCE_BUSY", 409
+			if isReleaseWorkspace {
+				code = "WORKSPACE_IN_USE"
+			}
 		} else if errors.Is(err, ErrBinding) {
 			code, status = "WORKSPACE_BINDING_CONFLICT", 409
 		} else if errors.As(err, &execution) {

@@ -89,13 +89,14 @@ type PreparationObserver interface {
 }
 
 type Service struct {
-	Pool           *pgxpool.Pool
-	Client         kubernetes.Interface
-	StationID      string
-	Profiles       map[string]HelperProfile
-	Observer       PreparationObserver
-	WorkerObserver WorkerObserver
-	DrainObserver  DrainObserver
+	Pool             *pgxpool.Pool
+	Client           kubernetes.Interface
+	StationID        string
+	Profiles         map[string]HelperProfile
+	Observer         PreparationObserver
+	WorkerObserver   WorkerObserver
+	DrainObserver    DrainObserver
+	WorkspaceCleaner func(ctx context.Context, namespace, pvcName, nodeName string) error
 }
 
 // Create advances one durable stage per authorized call. The Blender coordinator
