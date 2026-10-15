@@ -28,6 +28,10 @@ type stoppedChecker interface {
 
 type stoppedHTTPChecks struct{ client *http.Client }
 
+func supportsStoppedChecks(app string) bool {
+	return app == "higgsfield" || app == "project" || app == "world"
+}
+
 func newStoppedChecks() *stoppedHTTPChecks {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -101,13 +105,13 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	}
 	// Other application occupancy formats are not guessed. They can adopt the
 	// same ordinary driver when a real read-only business check is available.
-	if release.ReleaseKind != "dashboard-release" || (release.AppID != "higgsfield" && release.AppID != "project") || !validManagementRelease(release) {
+	if release.ReleaseKind != "dashboard-release" || !supportsStoppedChecks(release.AppID) || !validManagementRelease(release) {
 		return ErrManagementReplacement
 	}
-	project := release.AppID == "project"
+	contentService := release.AppID == "project" || release.AppID == "world"
 	scheme, port, activityPath := "http", "8001", "/limits"
 	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
-	if project {
+	if contentService {
 		scheme, port, activityPath = "https", "8443", "/healthz"
 		declarationPath, indexPath = "/internal/dashboard/declaration", "/internal/dashboard/index"
 	}
@@ -124,7 +128,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return err
 	}
 	client := *s.client
-	if project {
+	if contentService {
 		if transport, ok := client.Transport.(*http.Transport); ok {
 			transport = transport.Clone()
 			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}
@@ -144,7 +148,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		req.Header.Set("X-Organization-Id", b.OrganizationID)
 		req.Header.Set("X-Station-Id", b.StationID)
 		req.Header.Set("X-Request-Id", requestID)
-		if project {
+		if contentService {
 			req.Host = u.Host
 		}
 		response, err := client.Do(req)
@@ -153,7 +157,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		}
 		defer response.Body.Close()
 		expected := http.StatusOK
-		if project && path == activityPath {
+		if contentService && path == activityPath {
 			expected = http.StatusNoContent
 		}
 		if response.StatusCode != expected {
@@ -170,7 +174,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return err
 	}
 	busy := false
-	if !project {
+	if !contentService {
 		var limits struct {
 			Active    *int   `json:"active_count"`
 			Submitted *int   `json:"submitted_count"`

@@ -123,3 +123,34 @@ func TestVersionedComponentImageTags(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryContentHealthEndpoints(t *testing.T) {
+	for _, app := range []string{"project", "world", "unrelated"} {
+		for _, endpoint := range []string{"https://test-app.test-runtime.svc.cluster.local:8443/healthz", "http://test-app.test-runtime.svc.cluster.local:8443/healthz", "https://foreign.test-runtime.svc.cluster.local:8443/healthz"} {
+			t.Run(app+"/"+endpoint, func(t *testing.T) {
+				root := t.TempDir()
+				write := func(name string, value any) {
+					t.Helper()
+					raw, err := json.Marshal(value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = os.WriteFile(filepath.Join(root, name), raw, 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				deployment := target().Deployment
+				deployment.APIVersion, deployment.Kind = "apps/v1", "Deployment"
+				deployment.Spec.Template.Spec.Containers[0].Image = "example.invalid/server:1.0.0"
+				write("workload.json", deployment)
+				write("manifest.json", map[string]any{"app_id": app, "version": "1.0.0", "required_models": []any{}, "required_resources": map[string]any{"gpu": 0, "disk_bytes": 0}, "deployment": map[string]any{"template_ref": "workload.json", "workload_name": "test-app", "images": []any{map[string]string{"component": "server", "image": "example.invalid/server:1.0.0"}}}})
+				write("registry.json", []registryEntry{{ManifestFile: "manifest.json", Namespace: "test-runtime", ActivityURL: endpoint, ActivityTokenEnv: "STATION_APP_TEST_TOKEN"}})
+				_, err := LoadRegistry(root, filepath.Join(root, "registry.json"))
+				want := app != "unrelated" && endpoint == "https://test-app.test-runtime.svc.cluster.local:8443/healthz"
+				if (err == nil) != want {
+					t.Fatalf("health registration acceptance=%v, want %v", err == nil, want)
+				}
+			})
+		}
+	}
+}
