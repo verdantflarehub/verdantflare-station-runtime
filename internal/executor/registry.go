@@ -131,7 +131,8 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 		}
 		if e.ActivityURL != "" {
 			u, err := url.Parse(e.ActivityURL)
-			if err != nil || u.Scheme != "http" || u.Hostname() != m.Deployment.Name+"."+e.Namespace+".svc.cluster.local" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.ForceQuery || (u.Path != "/api/dashboard" && !(m.AppID == "higgsfield" && u.Path == "/limits" && u.Port() == "8001")) || !regexp.MustCompile(`^STATION_APP_[A-Z0-9_]+$`).MatchString(e.ActivityTokenEnv) {
+			projectHealth := err == nil && m.AppID == "project" && u.Scheme == "https" && u.Path == "/healthz" && u.Port() == "8443"
+			if err != nil || (!projectHealth && (u.Scheme != "http" || (u.Path != "/api/dashboard" && !(m.AppID == "higgsfield" && u.Path == "/limits" && u.Port() == "8001")))) || u.Hostname() != m.Deployment.Name+"."+e.Namespace+".svc.cluster.local" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.ForceQuery || !regexp.MustCompile(`^STATION_APP_[A-Z0-9_]+$`).MatchString(e.ActivityTokenEnv) {
 				return nil, errors.New("invalid registered activity endpoint")
 			}
 		}

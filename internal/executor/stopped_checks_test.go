@@ -11,8 +11,12 @@ import (
 )
 
 func stoppedChecksFixture(t *testing.T) (*maintenanceFixture, *stoppedHTTPChecks, []byte) {
+	return stoppedChecksFixtureFor(t, "higgsfield")
+}
+
+func stoppedChecksFixtureFor(t *testing.T, app string) (*maintenanceFixture, *stoppedHTTPChecks, []byte) {
 	t.Helper()
-	f := newMaintenanceFixtureFor(t, func(source, target *Target) { source.AppID = "higgsfield"; target.AppID = "higgsfield" })
+	f := newMaintenanceFixtureFor(t, func(source, target *Target) { source.AppID = app; target.AppID = app })
 	f.pod.Status.PodIP = "10.0.0.9"
 	f.savePod(t)
 	index := []byte(`{"schemaVersion":1,"files":{"index.html":"test"}}`)

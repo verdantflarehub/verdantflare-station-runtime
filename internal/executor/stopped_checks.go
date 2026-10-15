@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -99,11 +101,18 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	}
 	// Other application occupancy formats are not guessed. They can adopt the
 	// same ordinary driver when a real read-only business check is available.
-	if release.ReleaseKind != "dashboard-release" || release.AppID != "higgsfield" || !validManagementRelease(release) {
+	if release.ReleaseKind != "dashboard-release" || (release.AppID != "higgsfield" && release.AppID != "project") || !validManagementRelease(release) {
 		return ErrManagementReplacement
 	}
+	project := release.AppID == "project"
+	scheme, port, activityPath := "http", "8001", "/limits"
+	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
+	if project {
+		scheme, port, activityPath = "https", "8443", "/healthz"
+		declarationPath, indexPath = "/internal/dashboard/declaration", "/internal/dashboard/index"
+	}
 	u, err := url.Parse(t.ActivityURL)
-	if err != nil || u.Scheme != "http" || u.Hostname() != t.Deployment.Name+"."+t.Deployment.Namespace+".svc.cluster.local" || u.Port() != "8001" || u.Path != "/limits" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.User != nil || u.Fragment != "" {
+	if err != nil || u.Scheme != scheme || u.Hostname() != t.Deployment.Name+"."+t.Deployment.Namespace+".svc.cluster.local" || u.Port() != port || u.Path != activityPath || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.User != nil || u.Fragment != "" {
 		return ErrManagementReplacement
 	}
 	token := os.Getenv(t.ActivityTokenEnv)
@@ -114,8 +123,18 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	if err != nil {
 		return err
 	}
+	client := *s.client
+	if project {
+		if transport, ok := client.Transport.(*http.Transport); ok {
+			transport = transport.Clone()
+			transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, ServerName: u.Hostname()}
+			client.Transport = transport
+			defer transport.CloseIdleConnections()
+		}
+	}
+	requestID := uuid.Must(uuid.NewV7()).String()
 	get := func(path string) ([]byte, error) {
-		endpoint := "http://" + net.JoinHostPort(before.Status.PodIP, "8001") + path
+		endpoint := scheme + "://" + net.JoinHostPort(before.Status.PodIP, port) + path
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 		if err != nil {
 			return nil, ErrManagementReplacement
@@ -124,12 +143,20 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		req.Header.Set("X-User-Id", b.UserID)
 		req.Header.Set("X-Organization-Id", b.OrganizationID)
 		req.Header.Set("X-Station-Id", b.StationID)
-		response, err := s.client.Do(req)
+		req.Header.Set("X-Request-Id", requestID)
+		if project {
+			req.Host = u.Host
+		}
+		response, err := client.Do(req)
 		if err != nil {
 			return nil, ErrManagementMaintenanceUnavailable
 		}
 		defer response.Body.Close()
-		if response.StatusCode != http.StatusOK {
+		expected := http.StatusOK
+		if project && path == activityPath {
+			expected = http.StatusNoContent
+		}
+		if response.StatusCode != expected {
 			return nil, ErrManagementReplacement
 		}
 		raw, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
@@ -138,21 +165,24 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		}
 		return raw, nil
 	}
-	raw, err := get("/limits")
+	raw, err := get(activityPath)
 	if err != nil {
 		return err
 	}
-	var limits struct {
-		Active    *int   `json:"active_count"`
-		Submitted *int   `json:"submitted_count"`
-		Binding   string `json:"binding_id"`
+	busy := false
+	if !project {
+		var limits struct {
+			Active    *int   `json:"active_count"`
+			Submitted *int   `json:"submitted_count"`
+			Binding   string `json:"binding_id"`
+		}
+		checked, err := strictjson.ReadValue(bytes.NewReader(raw), 1<<20)
+		if err != nil || json.Unmarshal(checked, &limits) != nil || limits.Active == nil || limits.Submitted == nil || *limits.Active < 0 || *limits.Submitted < *limits.Active || limits.Binding == "" {
+			return ErrManagementReplacement
+		}
+		busy = idle && *limits.Active != 0
 	}
-	checked, err := strictjson.ReadValue(bytes.NewReader(raw), 1<<20)
-	if err != nil || json.Unmarshal(checked, &limits) != nil || limits.Active == nil || limits.Submitted == nil || *limits.Active < 0 || *limits.Submitted < *limits.Active || limits.Binding == "" {
-		return ErrManagementReplacement
-	}
-	busy := idle && *limits.Active != 0
-	raw, err = get("/internal/dashboard-declaration")
+	raw, err = get(declarationPath)
 	if err != nil {
 		return err
 	}
@@ -163,11 +193,11 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 			Digest string `json:"artifactDigest"`
 		} `json:"dashboard"`
 	}
-	checked, err = strictjson.ReadValue(bytes.NewReader(raw), 1<<20)
+	checked, err := strictjson.ReadValue(bytes.NewReader(raw), 1<<20)
 	if err != nil || json.Unmarshal(checked, &declaration) != nil || declaration.AppID != release.AppID || declaration.AppVersion != release.AppVersion || declaration.Dashboard.Digest != release.DashboardDigest {
 		return ErrManagementReplacement
 	}
-	raw, err = get("/internal/dashboard-index")
+	raw, err = get(indexPath)
 	if err != nil {
 		return err
 	}

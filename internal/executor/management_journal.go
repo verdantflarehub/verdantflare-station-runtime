@@ -211,7 +211,7 @@ func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode, expe
 	}
 	stopped := b.Source.ReleaseKind == "dashboard-release" && b.Target.ReleaseKind == "dashboard-release"
 	if (!stopped && j.Maintenance == nil) || (b.Source.ReleaseKind != b.Target.ReleaseKind) || (b.Source.ReleaseKind != "" && !stopped) ||
-		(stopped && (!validManagementRelease(b.Source) || !validManagementRelease(b.Target) || app != "higgsfield")) {
+		(stopped && (!validManagementRelease(b.Source) || !validManagementRelease(b.Target) || (app != "higgsfield" && app != "project"))) {
 		return empty, ErrManagementReplacement
 	}
 	driver, err := newManagementReplacement(j.Kubernetes, source, target, &pb.AppRequest{OperationId: operation, InstallationId: b.InstallationID, StationId: b.StationID, OrganizationId: b.OrganizationID, UserId: b.UserID, AppId: app, AppVersion: b.Source.AppVersion}, stopped)
