@@ -37,6 +37,13 @@ func NewManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 }
 
 func newManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRequest, stopped bool) (*ManagementReplacement, error) {
+	if stopped {
+		var err error
+		source, target, err = stoppedRetainedServices(source, target)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if k == nil || k.Client == nil || in == nil {
 		return nil, ErrManagementReplacement
 	}

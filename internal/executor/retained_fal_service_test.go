@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 func retainedFal(t Target) *corev1.Service {
@@ -119,6 +120,28 @@ func TestRetainedFalNamedPorts(t *testing.T) {
 	s.Deployment.Spec.Template.Spec.Containers[0].Ports[1].ContainerPort = 8002
 	if validRetainedFalService(s) {
 		t.Fatal("wrong target listener accepted")
+	}
+}
+
+func TestJournalDriverIncludesRetainedFalService(t *testing.T) {
+	s, request := installationFixture()
+	s.AppID = "fal"
+	s.Services = nil
+	s.RetainedFalService = retainedFal(s)
+	s.Hash[0] = 1
+	d := s
+	d.Version = "1.0.1"
+	d.Hash[0] = 2
+	d.Deployment = s.Deployment.DeepCopy()
+	d.Deployment.Spec.Template.Spec.Containers[0].Image = "example.invalid/server:1.0.1"
+	request.AppId = "fal"
+	// The journal calls the shared constructor directly, not the convenience wrapper.
+	r, err := newManagementReplacement(&Kubernetes{Client: fake.NewSimpleClientset()}, s, d, request, true)
+	if err != nil || len(r.Source.Services) != 1 || len(r.Target.Services) != 1 || r.Source.Services[0].UID != s.RetainedFalService.UID {
+		t.Fatal("journal lost retained service", err)
+	}
+	if len(s.Services) != 0 || r.Source.Hash != s.Hash {
+		t.Fatal("mutated immutable target")
 	}
 }
 
