@@ -60,8 +60,12 @@ func newManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 		return nil, ErrManagementReplacement
 	}
 	// Management-only compatibility deliberately permits image/env changes only.
-	// All volume, command, resource and security fields must remain equivalent.
+	// Network's immutable consumer config reference has a narrow read-only
+	// exception. All other volume, command, resource and security fields match.
 	compare := target.Deployment.DeepCopy()
+	if stopped && normalizeNetworkConsumerConfig(k, source, compare) != nil {
+		return nil, ErrManagementReplacement
+	}
 	for _, pair := range [][2][]corev1.Container{{source.Deployment.Spec.Template.Spec.Containers, compare.Spec.Template.Spec.Containers},
 		{source.Deployment.Spec.Template.Spec.InitContainers, compare.Spec.Template.Spec.InitContainers}} {
 		if len(pair[0]) != len(pair[1]) {
