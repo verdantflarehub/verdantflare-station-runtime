@@ -140,3 +140,25 @@ func TestChatGPTExecutionPortsRejectUnmarkedLiveDrift(t *testing.T) {
 		t.Fatal("unmarked port drift admitted", err)
 	}
 }
+
+func TestChatGPTExecutionPortsDefaultProtocol(t *testing.T) {
+	r, _, _, in := chatgptPortsFixture(t)
+	for _, protocol := range []corev1.Protocol{"", corev1.ProtocolTCP, corev1.ProtocolUDP, corev1.ProtocolSCTP} {
+		t.Run(string(protocol), func(t *testing.T) {
+			source, target := unboundPortsTarget(r.Source), unboundPortsTarget(r.Target)
+			source.Services = []*corev1.Service{source.Services[0].DeepCopy()}
+			target.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+			source.Services[0].Spec.Ports[0].Protocol = protocol
+			target.Services[0].Spec.Ports[1].Protocol = ""
+			before := source.Services[0].DeepCopy()
+			_, err := NewStoppedReplacement(r.Kubernetes, source, target, in)
+			allowed := protocol == "" || protocol == corev1.ProtocolTCP
+			if (err == nil) != allowed {
+				t.Fatalf("protocol %q: %v", protocol, err)
+			}
+			if !reflect.DeepEqual(source.Services[0], before) || target.Services[0].Spec.Ports[1].Protocol != "" {
+				t.Fatal("immutable templates mutated")
+			}
+		})
+	}
+}
