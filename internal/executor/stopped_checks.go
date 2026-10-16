@@ -32,8 +32,11 @@ type stoppedHTTPChecks struct{ client *http.Client }
 //go:embed fal_010_activity.py
 var legacyFalActivityProgram string
 
+//go:embed google_010_activity.py
+var legacyGoogleActivityProgram string
+
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -114,10 +117,11 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	}
 	contentService := release.AppID == "project" || release.AppID == "world"
 	fal := release.AppID == "fal"
+	google := release.AppID == "google"
 	network := release.AppID == "network"
 	scheme, port, activityPath := "http", "8001", "/limits"
 	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
-	if fal {
+	if fal || google {
 		port, activityPath = "8000", "/v1/activity"
 	}
 	if contentService {
@@ -186,7 +190,28 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return raw, nil
 	}
 	var raw []byte
-	if fal && release.AppVersion == "0.1.0" {
+	if google && (release.AppVersion == "0.1.0" || release.AppVersion == "0.1.1") {
+		container := before.Spec.Containers[0]
+		if r.Kubernetes.googleActivityExec == nil ||
+			len(container.Command) != 0 || len(container.Args) != 0 ||
+			(container.WorkingDir != "" && container.WorkingDir != "/app") ||
+			(before.Spec.ShareProcessNamespace != nil && *before.Spec.ShareProcessNamespace) ||
+			container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+			return ErrManagementReplacement
+		}
+		stateMount := false
+		for _, mount := range container.VolumeMounts {
+			if mount.MountPath == "/data/google" {
+				stateMount = true
+			} else if mount.MountPath != "/tmp" {
+				return ErrManagementReplacement
+			}
+		}
+		if !stateMount {
+			return ErrManagementReplacement
+		}
+		raw, err = r.Kubernetes.googleActivityExec(ctx, before.Namespace, before.Name, container.Name, nil)
+	} else if fal && release.AppVersion == "0.1.0" {
 		container := before.Spec.Containers[0]
 		if r.Kubernetes.falActivityExec == nil || len(container.Command) != 0 || len(container.Args) != 0 ||
 			(container.WorkingDir != "" && container.WorkingDir != "/app") ||
@@ -213,7 +238,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return err
 	}
 	busy := false
-	if fal {
+	if fal || google {
 		var activity struct {
 			Schema    *int   `json:"schema_version"`
 			Scope     string `json:"scope"`

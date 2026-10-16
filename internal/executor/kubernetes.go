@@ -34,9 +34,10 @@ type Driver interface {
 	Step(context.Context, Target, string, string, string, string) (Result, error)
 }
 type Kubernetes struct {
-	Client          kubernetes.Interface
-	maintenanceExec legacyMaintenanceExec
-	falActivityExec legacyMaintenanceExec
+	Client             kubernetes.Interface
+	maintenanceExec    legacyMaintenanceExec
+	falActivityExec    legacyMaintenanceExec
+	googleActivityExec legacyMaintenanceExec
 }
 
 func NewKubernetes(path, contextName string) (*Kubernetes, error) {
@@ -66,7 +67,7 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram)}, nil
+	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram)}, nil
 }
 func annotations(t Target, station, org string) map[string]string {
 	values := map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}
