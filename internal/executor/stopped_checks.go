@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -28,8 +29,11 @@ type stoppedChecker interface {
 
 type stoppedHTTPChecks struct{ client *http.Client }
 
+//go:embed fal_010_activity.py
+var legacyFalActivityProgram string
+
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -109,8 +113,12 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return ErrManagementReplacement
 	}
 	contentService := release.AppID == "project" || release.AppID == "world"
+	fal := release.AppID == "fal"
 	scheme, port, activityPath := "http", "8001", "/limits"
 	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
+	if fal {
+		port, activityPath = "8000", "/v1/activity"
+	}
 	if contentService {
 		scheme, port, activityPath = "https", "8443", "/healthz"
 		declarationPath, indexPath = "/internal/dashboard/declaration", "/internal/dashboard/index"
@@ -169,12 +177,47 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		}
 		return raw, nil
 	}
-	raw, err := get(activityPath)
+	var raw []byte
+	if fal && release.AppVersion == "0.1.0" {
+		container := before.Spec.Containers[0]
+		if r.Kubernetes.falActivityExec == nil || len(container.Command) != 0 || len(container.Args) != 0 ||
+			(container.WorkingDir != "" && container.WorkingDir != "/app") ||
+			(before.Spec.ShareProcessNamespace != nil && *before.Spec.ShareProcessNamespace) ||
+			container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+			return ErrManagementReplacement
+		}
+		stateMount := false
+		for _, mount := range container.VolumeMounts {
+			if mount.MountPath == "/data/fal" {
+				stateMount = true
+			} else if mount.MountPath != "/tmp" {
+				return ErrManagementReplacement
+			}
+		}
+		if !stateMount {
+			return ErrManagementReplacement
+		}
+		raw, err = r.Kubernetes.falActivityExec(ctx, before.Namespace, before.Name, container.Name, nil)
+	} else {
+		raw, err = get(activityPath)
+	}
 	if err != nil {
 		return err
 	}
 	busy := false
-	if !contentService {
+	if fal {
+		var activity struct {
+			Schema    *int   `json:"schema_version"`
+			Scope     string `json:"scope"`
+			Active    *int   `json:"active_count"`
+			Submitted *int   `json:"submitted_count"`
+		}
+		checked, e := strictjson.ReadValue(bytes.NewReader(raw), 1<<20)
+		if e != nil || json.Unmarshal(checked, &activity) != nil || activity.Schema == nil || *activity.Schema != 1 || activity.Scope != "installation" || activity.Active == nil || activity.Submitted == nil || *activity.Active < 0 || *activity.Submitted < *activity.Active {
+			return ErrManagementReplacement
+		}
+		busy = idle && *activity.Active != 0
+	} else if !contentService {
 		var limits struct {
 			Active    *int   `json:"active_count"`
 			Submitted *int   `json:"submitted_count"`

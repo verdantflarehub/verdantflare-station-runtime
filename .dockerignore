@@ -4,3 +4,6 @@
 *.md
 dist/
 **/*_test.go
+**/test_*.py
+**/__pycache__/
+**/*.pyc

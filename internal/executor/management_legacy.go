@@ -82,6 +82,11 @@ func (b *maintenanceOutput) Write(p []byte) (int, error) {
 // Private closure with a fixed program and bounded input/output. No caller can
 // choose an executable, flags, database path or script through this interface.
 func newLegacyMaintenanceExec(config *rest.Config, client kubernetes.Interface) legacyMaintenanceExec {
+	return newFixedMaintenanceExec(config, client, legacyComfyProgram)
+}
+
+// program is selected by internal constructors, never by an API request.
+func newFixedMaintenanceExec(config *rest.Config, client kubernetes.Interface, program string) legacyMaintenanceExec {
 	return func(ctx context.Context, namespace, pod, container string, input []byte) ([]byte, error) {
 		if config == nil || client == nil || !validName(namespace) || !validName(pod) || !validName(container) || len(input) > 16<<10 {
 			return nil, ErrManagementMaintenanceUnavailable
@@ -91,7 +96,7 @@ func newLegacyMaintenanceExec(config *rest.Config, client kubernetes.Interface) 
 		cfg := rest.CopyConfig(config)
 		cfg.Timeout = 10 * time.Second
 		req := client.CoreV1().RESTClient().Post().Namespace(namespace).Resource("pods").Name(pod).SubResource("exec").VersionedParams(&corev1.PodExecOptions{
-			Container: container, Command: []string{"/usr/local/bin/python", "-I", "-c", legacyComfyProgram}, Stdin: true, Stdout: true, Stderr: true,
+			Container: container, Command: []string{"/usr/local/bin/python", "-I", "-c", program}, Stdin: true, Stdout: true, Stderr: true,
 		}, scheme.ParameterCodec)
 		executor, err := remotecommand.NewSPDYExecutor(cfg, http.MethodPost, req.URL())
 		if err != nil {
