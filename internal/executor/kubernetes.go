@@ -34,11 +34,12 @@ type Driver interface {
 	Step(context.Context, Target, string, string, string, string) (Result, error)
 }
 type Kubernetes struct {
-	Client             kubernetes.Interface
-	maintenanceExec    legacyMaintenanceExec
-	falActivityExec    legacyMaintenanceExec
-	googleActivityExec legacyMaintenanceExec
-	grokActivityExec   legacyMaintenanceExec
+	Client              kubernetes.Interface
+	maintenanceExec     legacyMaintenanceExec
+	falActivityExec     legacyMaintenanceExec
+	googleActivityExec  legacyMaintenanceExec
+	grokActivityExec    legacyMaintenanceExec
+	chatgptActivityExec legacyMaintenanceExec
 }
 
 func NewKubernetes(path, contextName string) (*Kubernetes, error) {
@@ -68,7 +69,7 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram), grokActivityExec: newFixedMaintenanceExec(cfg, c, legacyGrokActivityProgram)}, nil
+	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram), grokActivityExec: newFixedMaintenanceExec(cfg, c, legacyGrokActivityProgram), chatgptActivityExec: newFixedMaintenanceExec(cfg, c, legacyChatGPTActivityProgram)}, nil
 }
 func annotations(t Target, station, org string) map[string]string {
 	values := map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}

@@ -38,8 +38,11 @@ var legacyGoogleActivityProgram string
 //go:embed grok_010_activity.py
 var legacyGrokActivityProgram string
 
+//go:embed chatgpt_010_activity.py
+var legacyChatGPTActivityProgram string
+
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok" || app == "chatgpt"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -122,10 +125,11 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	fal := release.AppID == "fal"
 	google := release.AppID == "google"
 	grok := release.AppID == "grok"
+	chatgpt := release.AppID == "chatgpt"
 	network := release.AppID == "network"
 	scheme, port, activityPath := "http", "8001", "/limits"
 	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
-	if fal || google || grok {
+	if fal || google || grok || chatgpt {
 		port, activityPath = "8000", "/v1/activity"
 	}
 	if contentService {
@@ -236,6 +240,27 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 			return ErrManagementReplacement
 		}
 		raw, err = r.Kubernetes.grokActivityExec(ctx, before.Namespace, before.Name, container.Name, nil)
+	} else if chatgpt && release.AppVersion == "0.1.0" {
+		container := before.Spec.Containers[0]
+		if r.Kubernetes.chatgptActivityExec == nil ||
+			len(container.Command) != 0 || len(container.Args) != 0 ||
+			(container.WorkingDir != "" && container.WorkingDir != "/app") ||
+			(before.Spec.ShareProcessNamespace != nil && *before.Spec.ShareProcessNamespace) ||
+			container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+			return ErrManagementReplacement
+		}
+		stateMount := false
+		for _, mount := range container.VolumeMounts {
+			if mount.MountPath == "/data/chatgpt" {
+				stateMount = true
+			} else if mount.MountPath != "/tmp" {
+				return ErrManagementReplacement
+			}
+		}
+		if !stateMount {
+			return ErrManagementReplacement
+		}
+		raw, err = r.Kubernetes.chatgptActivityExec(ctx, before.Namespace, before.Name, container.Name, nil)
 	} else if fal && release.AppVersion == "0.1.0" {
 		container := before.Spec.Containers[0]
 		if r.Kubernetes.falActivityExec == nil || len(container.Command) != 0 || len(container.Args) != 0 ||
@@ -263,7 +288,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return err
 	}
 	busy := false
-	if fal || google || grok {
+	if fal || google || grok || chatgpt {
 		var activity struct {
 			Schema    *int   `json:"schema_version"`
 			Scope     string `json:"scope"`

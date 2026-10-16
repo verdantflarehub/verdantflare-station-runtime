@@ -125,7 +125,7 @@ func TestVersionedComponentImageTags(t *testing.T) {
 }
 
 func TestRegistryContentHealthEndpoints(t *testing.T) {
-	for _, app := range []string{"project", "world", "fal", "google", "grok", "unrelated"} {
+	for _, app := range []string{"project", "world", "fal", "google", "grok", "chatgpt", "unrelated"} {
 		for _, endpoint := range []string{"https://test-app.test-runtime.svc.cluster.local:8443/healthz", "http://test-app.test-runtime.svc.cluster.local:8443/healthz", "https://foreign.test-runtime.svc.cluster.local:8443/healthz", "http://test-app.test-runtime.svc.cluster.local:8000/v1/activity", "http://test-app.test-runtime.svc.cluster.local:8001/v1/activity"} {
 			t.Run(app+"/"+endpoint, func(t *testing.T) {
 				root := t.TempDir()
@@ -146,7 +146,7 @@ func TestRegistryContentHealthEndpoints(t *testing.T) {
 				write("manifest.json", map[string]any{"app_id": app, "version": "1.0.0", "required_models": []any{}, "required_resources": map[string]any{"gpu": 0, "disk_bytes": 0}, "deployment": map[string]any{"template_ref": "workload.json", "workload_name": "test-app", "images": []any{map[string]string{"component": "server", "image": "example.invalid/server:1.0.0"}}}})
 				write("registry.json", []registryEntry{{ManifestFile: "manifest.json", Namespace: "test-runtime", ActivityURL: endpoint, ActivityTokenEnv: "STATION_APP_TEST_TOKEN"}})
 				_, err := LoadRegistry(root, filepath.Join(root, "registry.json"))
-				want := ((app == "project" || app == "world") && endpoint == "https://test-app.test-runtime.svc.cluster.local:8443/healthz") || ((app == "fal" || app == "google" || app == "grok") && endpoint == "http://test-app.test-runtime.svc.cluster.local:8000/v1/activity")
+				want := ((app == "project" || app == "world") && endpoint == "https://test-app.test-runtime.svc.cluster.local:8443/healthz") || ((app == "fal" || app == "google" || app == "grok" || app == "chatgpt") && endpoint == "http://test-app.test-runtime.svc.cluster.local:8000/v1/activity")
 				if (err == nil) != want {
 					t.Fatalf("health registration acceptance=%v, want %v", err == nil, want)
 				}
