@@ -33,7 +33,7 @@ type stoppedHTTPChecks struct{ client *http.Client }
 var legacyFalActivityProgram string
 
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world" || app == "fal"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -114,6 +114,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	}
 	contentService := release.AppID == "project" || release.AppID == "world"
 	fal := release.AppID == "fal"
+	network := release.AppID == "network"
 	scheme, port, activityPath := "http", "8001", "/limits"
 	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
 	if fal {
@@ -122,6 +123,13 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	if contentService {
 		scheme, port, activityPath = "https", "8443", "/healthz"
 		declarationPath, indexPath = "/internal/dashboard/declaration", "/internal/dashboard/index"
+	}
+	if network {
+		port, activityPath = "8080", "/healthz"
+		declarationPath, indexPath = "/internal/dashboard/declaration", "/internal/dashboard/index"
+		if t.Deployment.Spec.Template.Spec.TerminationGracePeriodSeconds == nil || *t.Deployment.Spec.Template.Spec.TerminationGracePeriodSeconds < 70 {
+			return ErrManagementReplacement
+		}
 	}
 	u, err := url.Parse(t.ActivityURL)
 	if err != nil || u.Scheme != scheme || u.Hostname() != t.Deployment.Name+"."+t.Deployment.Namespace+".svc.cluster.local" || u.Port() != port || u.Path != activityPath || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || u.User != nil || u.Fragment != "" {
@@ -217,6 +225,14 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 			return ErrManagementReplacement
 		}
 		busy = idle && *activity.Active != 0
+	} else if network {
+		var health struct {
+			Status string `json:"status"`
+		}
+		checked, e := strictjson.ReadValue(bytes.NewReader(raw), 1<<20)
+		if e != nil || json.Unmarshal(checked, &health) != nil || health.Status != "ready" {
+			return ErrManagementReplacement
+		}
 	} else if !contentService {
 		var limits struct {
 			Active    *int   `json:"active_count"`
