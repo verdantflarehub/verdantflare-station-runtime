@@ -103,3 +103,35 @@ func TestStoppedJournalTransientCheckCannotPublish(t *testing.T) {
 		t.Fatal("uncertain check claimed success", got.Phase, err)
 	}
 }
+
+type imageBusyCheck struct{}
+
+func (imageBusyCheck) Check(context.Context, ManagementBinding, *StoppedReplacement, ManagementCheckpoint, bool, bool) error {
+	return ErrManagementInstallationBusy
+}
+
+func TestImageStoppedJournalDoesNotStopBusySourceOrRollbackTarget(t *testing.T) {
+	for _, target := range []bool{false, true} {
+		d, k, c := stoppedFixture(t)
+		ctx := context.Background()
+		_, _ = d.Gate(ctx, c)
+		phase, mode := "sealing", "prepare"
+		if target {
+			_, _ = d.Stop(ctx, c)
+			stoppedObservation(t, k, c, false)
+			_, _ = d.Start(ctx, c, true)
+			stoppedObservation(t, k, c, true)
+			phase, mode = "restoring", "restore"
+		}
+		r := managementRecord{ManagementProgress: ManagementProgress{Phase: phase}, Checkpoint: &c}
+		b := ManagementBinding{Source: ManagementRelease{AppID: "image-mcp"}}
+		got, err := advanceStopped(ctx, r, b, d, imageBusyCheck{}, mode)
+		if !errors.Is(err, ErrManagementInstallationBusy) || got.Phase != phase {
+			t.Fatal("busy task protection lost", got.Phase, err)
+		}
+		live, isTarget, err := d.liveDeployment(ctx, c)
+		if err != nil || *live.Spec.Replicas != 1 || isTarget != target {
+			t.Fatal("busy image process was stopped", err)
+		}
+	}
+}

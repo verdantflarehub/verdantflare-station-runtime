@@ -42,7 +42,7 @@ var legacyGrokActivityProgram string
 var legacyChatGPTActivityProgram string
 
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok" || app == "chatgpt"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok" || app == "chatgpt" || app == "image-mcp"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -120,6 +120,9 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	// same ordinary driver when a real read-only business check is available.
 	if release.ReleaseKind != "dashboard-release" || !supportsStoppedChecks(release.AppID) || !validManagementRelease(release) {
 		return ErrManagementReplacement
+	}
+	if release.AppID == "image-mcp" {
+		return s.checkImage(ctx, b, r, c, target, idle)
 	}
 	contentService := release.AppID == "project" || release.AppID == "world"
 	fal := release.AppID == "fal"

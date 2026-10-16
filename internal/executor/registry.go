@@ -136,7 +136,8 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 			contentHealth := err == nil && (m.AppID == "project" || m.AppID == "world") && u.Scheme == "https" && u.Path == "/healthz" && u.Port() == "8443"
 			falActivity := err == nil && (m.AppID == "fal" || m.AppID == "google" || m.AppID == "grok" || m.AppID == "chatgpt") && u.Scheme == "http" && u.Path == "/v1/activity" && u.Port() == "8000"
 			networkHealth := err == nil && m.AppID == "network" && u.Scheme == "http" && u.Path == "/healthz" && u.Port() == "8080"
-			if err != nil || (!contentHealth && !falActivity && !networkHealth && (u.Scheme != "http" || (u.Path != "/api/dashboard" && !(m.AppID == "higgsfield" && u.Path == "/limits" && u.Port() == "8001")))) || u.Hostname() != m.Deployment.Name+"."+e.Namespace+".svc.cluster.local" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.ForceQuery || !regexp.MustCompile(`^STATION_APP_[A-Z0-9_]+$`).MatchString(e.ActivityTokenEnv) {
+			imageActivity := err == nil && m.AppID == "image-mcp" && u.Scheme == "http" && u.Path == "/api/tasks/stats" && u.Port() == "8000"
+			if err != nil || (!contentHealth && !falActivity && !networkHealth && !imageActivity && (u.Scheme != "http" || (u.Path != "/api/dashboard" && !(m.AppID == "higgsfield" && u.Path == "/limits" && u.Port() == "8001")))) || u.Hostname() != m.Deployment.Name+"."+e.Namespace+".svc.cluster.local" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.ForceQuery || !regexp.MustCompile(`^STATION_APP_[A-Z0-9_]+$`).MatchString(e.ActivityTokenEnv) {
 				return nil, errors.New("invalid registered activity endpoint")
 			}
 		}
