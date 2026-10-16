@@ -119,7 +119,7 @@ func (r *ManagementReplacement) Capture(ctx context.Context) (ManagementCheckpoi
 		if err != nil {
 			return ManagementCheckpoint{}, err
 		}
-		if live.UID == "" || live.ResourceVersion == "" || live.DeletionTimestamp != nil ||
+		if live.UID == "" || (want.UID != "" && want.UID != live.UID) || live.ResourceVersion == "" || live.DeletionTimestamp != nil ||
 			!owned(live.Annotations, r.Source, r.StationID, r.OrganizationID) || !preinstalledServiceCompatible(want, live) {
 			return ManagementCheckpoint{}, ErrManagementReplacement
 		}
@@ -135,7 +135,7 @@ func (r *ManagementReplacement) validCheckpoint(c ManagementCheckpoint) bool {
 	}
 	for i, service := range c.Services {
 		want := r.Source.Services[i]
-		if service == nil || service.UID == "" || service.ResourceVersion == "" || service.DeletionTimestamp != nil ||
+		if service == nil || service.UID == "" || (want.UID != "" && want.UID != service.UID) || service.ResourceVersion == "" || service.DeletionTimestamp != nil ||
 			service.Name != want.Name || service.Namespace != want.Namespace || !owned(service.Annotations, r.Source, r.StationID, r.OrganizationID) ||
 			!preinstalledServiceCompatible(want, service) {
 			return false

@@ -20,6 +20,10 @@ const stoppedOperationKey = "station.verdantflare.com/stopped-transition"
 type StoppedReplacement struct{ *ManagementReplacement }
 
 func NewStoppedReplacement(k *Kubernetes, source, target Target, in *pb.AppRequest) (*StoppedReplacement, error) {
+	source, target, err := stoppedRetainedServices(source, target)
+	if err != nil {
+		return nil, err
+	}
 	r, err := newManagementReplacement(k, source, target, in, true)
 	if err != nil {
 		return nil, err

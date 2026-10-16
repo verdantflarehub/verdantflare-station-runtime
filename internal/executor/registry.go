@@ -19,6 +19,7 @@ import (
 )
 
 type Target struct {
+	RetainedFalService   *corev1.Service
 	InstallationBindings []InstallationBinding
 	InstallationID       string
 	ManifestRef          string
@@ -36,6 +37,7 @@ type Target struct {
 	Hash                 [32]byte
 }
 type registryEntry struct {
+	RetainedFalService   *corev1.Service       `json:"retained_fal_service,omitempty"`
 	InstallationBindings []InstallationBinding `json:"installation_bindings,omitempty"`
 	ActivityURL          string                `json:"activity_url,omitempty"`
 	ActivityTokenEnv     string                `json:"activity_token_env,omitempty"`
@@ -185,6 +187,10 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 		}
 		if t.Deployment == nil {
 			return nil, errors.New("registered deployment not found")
+		}
+		t.RetainedFalService = e.RetainedFalService
+		if !validRetainedFalService(t) {
+			return nil, errors.New("invalid retained fal service")
 		}
 		t.InstallationBindings = e.InstallationBindings
 		if !validInstallationBindings(t) {
