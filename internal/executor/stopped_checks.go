@@ -35,8 +35,11 @@ var legacyFalActivityProgram string
 //go:embed google_010_activity.py
 var legacyGoogleActivityProgram string
 
+//go:embed grok_010_activity.py
+var legacyGrokActivityProgram string
+
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -118,10 +121,11 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	contentService := release.AppID == "project" || release.AppID == "world"
 	fal := release.AppID == "fal"
 	google := release.AppID == "google"
+	grok := release.AppID == "grok"
 	network := release.AppID == "network"
 	scheme, port, activityPath := "http", "8001", "/limits"
 	declarationPath, indexPath := "/internal/dashboard-declaration", "/internal/dashboard-index"
-	if fal || google {
+	if fal || google || grok {
 		port, activityPath = "8000", "/v1/activity"
 	}
 	if contentService {
@@ -211,6 +215,27 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 			return ErrManagementReplacement
 		}
 		raw, err = r.Kubernetes.googleActivityExec(ctx, before.Namespace, before.Name, container.Name, nil)
+	} else if grok && release.AppVersion == "0.1.0" {
+		container := before.Spec.Containers[0]
+		if r.Kubernetes.grokActivityExec == nil ||
+			len(container.Command) != 0 || len(container.Args) != 0 ||
+			(container.WorkingDir != "" && container.WorkingDir != "/app") ||
+			(before.Spec.ShareProcessNamespace != nil && *before.Spec.ShareProcessNamespace) ||
+			container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem {
+			return ErrManagementReplacement
+		}
+		stateMount := false
+		for _, mount := range container.VolumeMounts {
+			if mount.MountPath == "/data/grok" {
+				stateMount = true
+			} else if mount.MountPath != "/tmp" {
+				return ErrManagementReplacement
+			}
+		}
+		if !stateMount {
+			return ErrManagementReplacement
+		}
+		raw, err = r.Kubernetes.grokActivityExec(ctx, before.Namespace, before.Name, container.Name, nil)
 	} else if fal && release.AppVersion == "0.1.0" {
 		container := before.Spec.Containers[0]
 		if r.Kubernetes.falActivityExec == nil || len(container.Command) != 0 || len(container.Args) != 0 ||
@@ -238,7 +263,7 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 		return err
 	}
 	busy := false
-	if fal || google {
+	if fal || google || grok {
 		var activity struct {
 			Schema    *int   `json:"schema_version"`
 			Scope     string `json:"scope"`
