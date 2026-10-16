@@ -69,7 +69,12 @@ func (r *StoppedReplacement) liveService(ctx context.Context, original *corev1.S
 	if gated {
 		compare.Spec.Selector = original.Spec.Selector
 	}
-	if !preinstalledServiceCompatible(original, compare) || !((owned(live.Annotations, r.Source, r.StationID, r.OrganizationID) && originalMarker(live.Annotations, original.Annotations)) || r.targetMarked(live.Annotations)) {
+	want := original
+	if r.targetMarked(live.Annotations) && chatgptExecutionPorts(r.Source, r.Target) {
+		want = original.DeepCopy()
+		want.Spec.Ports = r.Target.Services[0].Spec.Ports
+	}
+	if !preinstalledServiceCompatible(want, compare) || !((owned(live.Annotations, r.Source, r.StationID, r.OrganizationID) && originalMarker(live.Annotations, original.Annotations)) || r.targetMarked(live.Annotations)) {
 		return nil, false, ErrManagementReplacement
 	}
 	return live, gated, nil
@@ -229,6 +234,12 @@ func (r *StoppedReplacement) Open(ctx context.Context, c ManagementCheckpoint, t
 			continue
 		}
 		live.Spec.Selector = original.Spec.Selector
+		if chatgptExecutionPorts(r.Source, r.Target) {
+			live.Spec.Ports = original.DeepCopy().Spec.Ports
+			if target {
+				live.Spec.Ports = r.Target.Services[0].DeepCopy().Spec.Ports
+			}
+		}
 		delete(live.Annotations, stoppedOperationKey)
 		if target {
 			mark(&live.ObjectMeta, r.Target, r.StationID, r.OrganizationID)

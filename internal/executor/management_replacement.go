@@ -84,7 +84,7 @@ func newManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 	for i, service := range source.Services {
 		other := target.Services[i]
 		if service == nil || other == nil || service.Name != other.Name || service.Namespace != other.Namespace ||
-			!reflect.DeepEqual(service.Spec, other.Spec) {
+			(!reflect.DeepEqual(service.Spec, other.Spec) && !(stopped && chatgptExecutionPorts(source, target))) {
 			return nil, ErrManagementReplacement
 		}
 	}
