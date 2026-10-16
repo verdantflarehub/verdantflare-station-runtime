@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	appsv1 "k8s.io/api/apps/v1"
@@ -74,6 +75,29 @@ func adoptable(m metav1.ObjectMeta, t Target, station, org string) bool {
 	}
 	for key, value := range annotations(t, station, org) {
 		if existing, ok := m.Annotations[key]; ok && existing != value {
+			if key == hashKey && reconcilesImageTemplate(m, t, station, org) {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+// A signed source template may reconcile one historical hash, never ownership.
+// adopt still checks the original Deployment UID and every object's full spec
+// before making metadata-only patches.
+func reconcilesImageTemplate(m metav1.ObjectMeta, t Target, station, org string) bool {
+	if !t.Preinstalled || t.AppID != "image-mcp" || t.Version != "0.2.16" || t.InstallationID == "" || t.Deployment == nil {
+		return false
+	}
+	old := t.Deployment.Annotations["station.verdantflare.com/reconciles-template-hash"]
+	raw, err := hex.DecodeString(old)
+	if err != nil || len(raw) != 32 || hex.EncodeToString(raw) != old || m.Annotations[hashKey] != old {
+		return false
+	}
+	for _, key := range []string{ownerKey, orgKey, appKey, installationKey} {
+		if m.Annotations[key] != annotations(t, station, org)[key] {
 			return false
 		}
 	}
