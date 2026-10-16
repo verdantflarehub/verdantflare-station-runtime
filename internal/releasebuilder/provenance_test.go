@@ -8,6 +8,72 @@ import (
 	"testing"
 )
 
+func TestImageProvenanceUsesActualHistoricalRepository(t *testing.T) {
+	for _, repository := range []string{"verdantflarehub/verdantflare-app-image", "verdantflarehub/verdantflare-app-image-mcp", "other/verdantflare-app-image"} {
+		t.Run(repository, func(t *testing.T) {
+			options, now, key := builderFixture(t)
+			for _, name := range []string{"manifest.yaml", "prepare.json", "package.json", "delivery.json"} {
+				file := filepath.Join(options.Root, name)
+				raw, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				raw = []byte(strings.ReplaceAll(string(raw), "test-app", "image-mcp"))
+				if name == "delivery.json" {
+					var d delivery
+					if err := json.Unmarshal(raw, &d); err != nil {
+						t.Fatal(err)
+					}
+					d.Repository = repository
+					raw, err = json.Marshal(d)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := os.WriteFile(file, raw, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The fixture's deployment name follows the manifest workload name.
+			workload := filepath.Join(options.Root, "workload.yaml")
+			raw, err := os.ReadFile(workload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(workload, []byte(strings.ReplaceAll(string(raw), "test-app", "image-mcp")), 0600); err != nil {
+				t.Fatal(err)
+			}
+			packagePath := filepath.Join(options.Root, "package.json")
+			raw, err = os.ReadFile(packagePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var p provenance
+			if err := json.Unmarshal(raw, &p); err != nil {
+				t.Fatal(err)
+			}
+			for _, ref := range []*materialRef{&p.Manifest, &p.Delivery} {
+				content, err := os.ReadFile(filepath.Join(options.Root, ref.Ref))
+				if err != nil {
+					t.Fatal(err)
+				}
+				ref.Digest = digest(content)
+			}
+			raw, err = json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(packagePath, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			_, err = Build(options, now, key)
+			if (err == nil) != (repository == "verdantflarehub/verdantflare-app-image") {
+				t.Fatal("repository admission mismatch", err)
+			}
+		})
+	}
+}
+
 func TestReleaseBuilderRejectsUnboundOrMismatchedProvenance(t *testing.T) {
 	for _, kind := range []string{"legacy-package", "wrong-app", "wrong-version", "unknown-field", "duplicate-field", "manifest-mapping", "manifest-bytes", "delivery-bytes", "declaration-bytes", "index-bytes", "navigation-bytes", "delivery-image", "delivery-revision"} {
 		t.Run(kind, func(t *testing.T) {

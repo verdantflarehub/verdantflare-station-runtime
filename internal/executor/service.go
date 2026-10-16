@@ -53,7 +53,7 @@ func (s *Service) reconcile(ctx context.Context, in *pb.AppRequest, guard *pb.Ap
 		return nil, status.Error(codes.InvalidArgument, "Unexpected workload UID")
 	}
 	target, targetExists := s.Targets[in.AppId+"@"+in.AppVersion]
-	hash := operationHash(in, len(target.InstallationBindings) > 0)
+	hash := operationHash(in, len(target.InstallationBindings) > 0 || (in.PreinstalledRelease != nil && in.InstallationId != ""))
 	if guard != nil {
 		hash = appCenterOperationHash(&pb.AppCenterRequest{Command: in, Guard: guard})
 	}

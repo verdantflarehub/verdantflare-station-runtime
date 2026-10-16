@@ -64,7 +64,7 @@ func bindInstallation(t Target, in *pb.AppRequest) (Target, error) {
 	if !validInstallationBindings(t) {
 		return Target{}, errors.New("invalid installation bindings")
 	}
-	if len(t.InstallationBindings) == 0 {
+	if len(t.InstallationBindings) == 0 && !(t.Preinstalled && in.InstallationId != "") {
 		return t, nil
 	}
 	id, err := uuid.Parse(in.InstallationId)
@@ -74,6 +74,9 @@ func bindInstallation(t Target, in *pb.AppRequest) (Target, error) {
 	values := map[string]string{"installation_id": in.InstallationId, "station_id": in.StationId,
 		"organization_id": in.OrganizationId, "app_id": in.AppId, "app_version": in.AppVersion}
 	t.InstallationID = in.InstallationId
+	if len(t.InstallationBindings) == 0 {
+		return t, nil
+	}
 	t.Deployment = t.Deployment.DeepCopy()
 	for _, binding := range t.InstallationBindings {
 		for i := range t.Deployment.Spec.Template.Spec.Containers {

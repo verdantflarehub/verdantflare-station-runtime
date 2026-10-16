@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,54 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
 )
+
+func TestPreinstalledDatabaseImageAdoptionPreservesInstallationWithoutEnvBindings(t *testing.T) {
+	pool, in := runtimeDB(t)
+	app := target()
+	app.AppID, app.Version = "image-mcp", "0.2.16"
+	app.Deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy = corev1.PullAlways
+	old := strings.Repeat("a", 64)
+	app.Deployment.Annotations = map[string]string{"station.verdantflare.com/reconciles-template-hash": old}
+	in.AppId, in.AppVersion, in.Action = app.AppID, app.Version, "adopt"
+	in.ExpectedWorkloadUid, in.InstallationId = uuid.NewString(), uuid.Must(uuid.NewV7()).String()
+	raw, err := json.Marshal(app.Deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.Hash = sha256.Sum256(raw)
+	source, binding := preinstalledDatabaseRelease(t, app)
+	in.PreinstalledRelease = binding
+	live := app.Deployment.DeepCopy()
+	live.UID = types.UID(in.ExpectedWorkloadUid)
+	live.Annotations = annotations(app, in.StationId, in.OrganizationId)
+	live.Annotations[installationKey], live.Annotations[hashKey] = in.InstallationId, old
+	client := fake.NewSimpleClientset(live)
+	svc := &Service{Pool: pool, StationID: in.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}, Releases: source}
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		out, err := svc.Reconcile(ctx, in)
+		if err != nil || (i == 0 && out.Status != "running") || (i > 0 && out.Status != "succeeded") {
+			t.Fatal(i, out, err)
+		}
+	}
+	after, err := client.AppsV1().Deployments(live.Namespace).Get(ctx, live.Name, metav1.GetOptions{})
+	if err != nil || after.Annotations[installationKey] != in.InstallationId || !reflect.DeepEqual(live.Spec, after.Spec) {
+		t.Fatal("installation identity lost or spec mutated", err)
+	}
+	patches := 0
+	for _, action := range client.Actions() {
+		if action.GetVerb() == "patch" {
+			patches++
+		}
+	}
+	if patches != 1 {
+		t.Fatal("terminal replay mutated resources", patches)
+	}
+	in.InstallationId = uuid.Must(uuid.NewV7()).String()
+	if _, err := svc.Reconcile(ctx, in); status.Code(err) != codes.AlreadyExists {
+		t.Fatal("changed installation identity replayed", err)
+	}
+}
 
 func preinstalledDatabaseRelease(t *testing.T, app Target) (*releasebinding.Source, *pb.PreinstalledRelease) {
 	t.Helper()

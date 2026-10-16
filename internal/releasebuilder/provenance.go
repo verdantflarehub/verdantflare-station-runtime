@@ -42,6 +42,14 @@ type delivery struct {
 var materialDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 var sourceRevision = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
+// Image predates the app repository naming convention; preserve its real source.
+func sourceRepository(appID string) string {
+	if appID == "image-mcp" {
+		return "verdantflarehub/verdantflare-app-image"
+	}
+	return "verdantflarehub/verdantflare-app-" + appID
+}
+
 // Provenance is specific to the preinstalled delivery slice; the existing v1
 // Runtime manifest and shared release binding remain unchanged. All original
 // bytes referenced by the package must still exist before signing.
@@ -72,7 +80,7 @@ func verifyProvenance(root *os.Root, raw []byte, target executor.Target) error {
 		}
 		if i == 1 {
 			var d delivery
-			if strictjson.Decode(bytes.NewReader(content), 64<<10, &d) != nil || d.SchemaVersion != 1 || d.AppID != p.AppID || d.AppVersion != p.AppVersion || !materialDigest.MatchString(d.ImageDigest) || !sourceRevision.MatchString(d.Revision) || d.Repository != "verdantflarehub/verdantflare-app-"+p.AppID || len(target.Deployment.Spec.Template.Spec.Containers) != 1 || len(target.Deployment.Spec.Template.Spec.InitContainers) != 0 || d.Image != target.Deployment.Spec.Template.Spec.Containers[0].Image {
+			if strictjson.Decode(bytes.NewReader(content), 64<<10, &d) != nil || d.SchemaVersion != 1 || d.AppID != p.AppID || d.AppVersion != p.AppVersion || !materialDigest.MatchString(d.ImageDigest) || !sourceRevision.MatchString(d.Revision) || d.Repository != sourceRepository(p.AppID) || len(target.Deployment.Spec.Template.Spec.Containers) != 1 || len(target.Deployment.Spec.Template.Spec.InitContainers) != 0 || d.Image != target.Deployment.Spec.Template.Spec.Containers[0].Image {
 				return ErrInvalid
 			}
 		}
