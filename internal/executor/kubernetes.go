@@ -40,6 +40,7 @@ type Kubernetes struct {
 	googleActivityExec  legacyMaintenanceExec
 	grokActivityExec    legacyMaintenanceExec
 	chatgptActivityExec legacyMaintenanceExec
+	videoActivityExec   legacyMaintenanceExec
 }
 
 func NewKubernetes(path, contextName string) (*Kubernetes, error) {
@@ -69,7 +70,7 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram), grokActivityExec: newFixedMaintenanceExec(cfg, c, legacyGrokActivityProgram), chatgptActivityExec: newFixedMaintenanceExec(cfg, c, legacyChatGPTActivityProgram)}, nil
+	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram), grokActivityExec: newFixedMaintenanceExec(cfg, c, legacyGrokActivityProgram), chatgptActivityExec: newFixedMaintenanceExec(cfg, c, legacyChatGPTActivityProgram), videoActivityExec: newFixedMaintenanceExec(cfg, c, legacyVideoActivityProgram)}, nil
 }
 func annotations(t Target, station, org string) map[string]string {
 	values := map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}

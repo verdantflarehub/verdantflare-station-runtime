@@ -41,8 +41,11 @@ var legacyGrokActivityProgram string
 //go:embed chatgpt_010_activity.py
 var legacyChatGPTActivityProgram string
 
+//go:embed video_01728_activity.py
+var legacyVideoActivityProgram string
+
 func supportsStoppedChecks(app string) bool {
-	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok" || app == "chatgpt" || app == "image-mcp"
+	return app == "higgsfield" || app == "project" || app == "world" || app == "fal" || app == "network" || app == "google" || app == "grok" || app == "chatgpt" || app == "image-mcp" || app == "video-mcp"
 }
 
 func newStoppedChecks() *stoppedHTTPChecks {
@@ -57,7 +60,11 @@ func stoppedPod(ctx context.Context, r *StoppedReplacement, c ManagementCheckpoi
 	if err != nil {
 		return zero, err
 	}
-	if isTarget != target || !managementReady(d) || len(d.Spec.Template.Spec.Containers) != 1 || len(d.Spec.Template.Spec.InitContainers) != 0 {
+	digests, err := stoppedContainerDigests(r, digest)
+	if err != nil {
+		return zero, err
+	}
+	if isTarget != target || !managementReady(d) || len(d.Spec.Template.Spec.Containers) != len(digests) || len(d.Spec.Template.Spec.InitContainers) != 0 {
 		return zero, ErrManagementReplacement
 	}
 	selector, err := metav1.LabelSelectorAsSelector(d.Spec.Selector)
@@ -85,7 +92,7 @@ func stoppedPod(ctx context.Context, r *StoppedReplacement, c ManagementCheckpoi
 		}
 	}
 	owner := metav1.GetControllerOf(&p)
-	if p.UID == "" || p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning || net.ParseIP(p.Status.PodIP) == nil || owner == nil || owner.Kind != "ReplicaSet" || owner.APIVersion != "apps/v1" || len(p.Spec.EphemeralContainers) != 0 || len(p.Spec.InitContainers) != 0 || len(p.Spec.Containers) != 1 || len(p.Status.ContainerStatuses) != 1 {
+	if p.UID == "" || p.DeletionTimestamp != nil || p.Status.Phase != corev1.PodRunning || net.ParseIP(p.Status.PodIP) == nil || owner == nil || owner.Kind != "ReplicaSet" || owner.APIVersion != "apps/v1" || len(p.Spec.EphemeralContainers) != 0 || len(p.Spec.InitContainers) != 0 || len(p.Spec.Containers) != len(digests) || len(p.Status.ContainerStatuses) != len(digests) {
 		return zero, ErrManagementReplacement
 	}
 	rs, err := r.Kubernetes.Client.AppsV1().ReplicaSets(d.Namespace).Get(ctx, owner.Name, metav1.GetOptions{})
@@ -96,17 +103,32 @@ func stoppedPod(ctx context.Context, r *StoppedReplacement, c ManagementCheckpoi
 	if rs.UID != owner.UID || rs.DeletionTimestamp != nil || parent == nil || parent.UID != d.UID || parent.Name != d.Name || parent.Kind != "Deployment" || parent.APIVersion != "apps/v1" {
 		return zero, ErrManagementReplacement
 	}
-	want := d.Spec.Template.Spec.Containers[0]
-	actual := p.Spec.Containers[0]
-	status := p.Status.ContainerStatuses[0]
 	ready := false
 	for _, cond := range p.Status.Conditions {
 		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
 			ready = true
 		}
 	}
-	if !ready || actual.Name != want.Name || actual.Image != want.Image || status.Name != want.Name || !status.Ready || status.State.Running == nil || status.ContainerID == "" || !managementDigest.MatchString(digest) || !managementImageID(status.ImageID, digest) {
+	if !ready {
 		return zero, ErrManagementReplacement
+	}
+	for i, expectedDigest := range digests {
+		want, actual := d.Spec.Template.Spec.Containers[i], p.Spec.Containers[i]
+		var status *corev1.ContainerStatus
+		for j := range p.Status.ContainerStatuses {
+			if p.Status.ContainerStatuses[j].Name == want.Name {
+				if status != nil {
+					return zero, ErrManagementReplacement
+				}
+				status = &p.Status.ContainerStatuses[j]
+			}
+		}
+		if status == nil || actual.Name != want.Name || actual.Image != want.Image || !status.Ready || status.State.Running == nil || status.ContainerID == "" || !managementDigest.MatchString(expectedDigest) || !managementImageID(status.ImageID, expectedDigest) {
+			return zero, ErrManagementReplacement
+		}
+		if r.Source.AppID == "video-mcp" && !videoPodContainerMatches(actual, want, p) {
+			return zero, ErrManagementReplacement
+		}
 	}
 	return p, nil
 }
@@ -123,6 +145,9 @@ func (s *stoppedHTTPChecks) Check(ctx context.Context, b ManagementBinding, r *S
 	}
 	if release.AppID == "image-mcp" {
 		return s.checkImage(ctx, b, r, c, target, idle)
+	}
+	if release.AppID == "video-mcp" {
+		return s.checkVideo(ctx, b, r, c, target, idle)
 	}
 	contentService := release.AppID == "project" || release.AppID == "world"
 	fal := release.AppID == "fal"

@@ -72,7 +72,7 @@ func advanceStopped(ctx context.Context, r managementRecord, b ManagementBinding
 		var done bool
 		done, err = d.Gate(ctx, *r.Checkpoint)
 		if err == nil && done {
-			if b.Source.AppID == "image-mcp" {
+			if b.Source.AppID == "image-mcp" || b.Source.AppID == "video-mcp" {
 				live, _, e := d.liveDeployment(ctx, *r.Checkpoint)
 				if e != nil {
 					return r, e
@@ -103,7 +103,7 @@ func advanceStopped(ctx context.Context, r managementRecord, b ManagementBinding
 		live, isTarget, liveErr := d.liveDeployment(ctx, *r.Checkpoint)
 		err = liveErr
 		if err == nil && isTarget {
-			if b.Source.AppID == "image-mcp" && *live.Spec.Replicas != 0 {
+			if (b.Source.AppID == "image-mcp" || b.Source.AppID == "video-mcp") && *live.Spec.Replicas != 0 {
 				if e := checks.Check(ctx, b, d, *r.Checkpoint, true, true); e != nil {
 					return r, e
 				}

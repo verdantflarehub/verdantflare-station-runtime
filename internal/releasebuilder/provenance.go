@@ -108,7 +108,7 @@ func deliveryContainersMatch(d delivery, target executor.Target) bool {
 	}
 	// This historical source includes a separate authorization callback sidecar.
 	// Both exact image references and digests must be bound by provenance.
-	if target.Version != "0.17.28" || len(containers) != 2 || len(d.Components) != 2 ||
+	if (target.Version != "0.17.28" && target.Version != "0.17.29") || len(containers) != 2 || len(d.Components) != 2 ||
 		containers[0].Name != "api" || containers[1].Name != "artifact-authority" {
 		return false
 	}
