@@ -119,7 +119,7 @@ def dashboard_digest(root):
 
 def main():
     version = importlib.metadata.version('verdantflare-video-mcp-server')
-    if version not in {'0.17.28', '0.17.29', '0.17.30', '0.17.31', '0.17.32'}:
+    if version not in {'0.17.28', '0.17.29', '0.17.30', '0.17.31', '0.17.32', '0.17.35', '0.17.36'}:
         raise ValueError('unavailable')
     command = Path('/proc/1/cmdline').read_bytes().rstrip(b'\0').split(b'\0')
     if (len(command) != 10 or Path(os.fsdecode(command[0])).name not in {'python', 'python3', 'python3.11'} or
