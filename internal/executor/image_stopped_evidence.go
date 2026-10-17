@@ -20,7 +20,7 @@ func imageDashboardDigest(html []byte) string {
 }
 
 func imageStoppedEvidence(get func(string) ([]byte, error), release ManagementRelease) (bool, error) {
-	if release.AppID != "image-mcp" || (release.AppVersion != "0.2.16" && release.AppVersion != "0.2.17" && release.AppVersion != "0.2.18" && release.AppVersion != "0.2.20" && release.AppVersion != "0.2.21") {
+	if release.AppID != "image-mcp" || (release.AppVersion != "0.2.16" && release.AppVersion != "0.2.17" && release.AppVersion != "0.2.18" && release.AppVersion != "0.2.20" && release.AppVersion != "0.2.21" && release.AppVersion != "0.2.22") {
 		return false, ErrManagementReplacement
 	}
 	raw, err := get("/api/tasks/stats")
