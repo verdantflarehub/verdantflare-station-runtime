@@ -75,7 +75,7 @@ func adoptable(m metav1.ObjectMeta, t Target, station, org string) bool {
 	}
 	for key, value := range annotations(t, station, org) {
 		if existing, ok := m.Annotations[key]; ok && existing != value {
-			if key == hashKey && reconcilesImageTemplate(m, t, station, org) {
+			if key == hashKey && reconcilesHistoricalTemplate(m, t, station, org) {
 				continue
 			}
 			return false
@@ -87,8 +87,10 @@ func adoptable(m metav1.ObjectMeta, t Target, station, org string) bool {
 // A signed source template may reconcile one historical hash, never ownership.
 // adopt still checks the original Deployment UID and every object's full spec
 // before making metadata-only patches.
-func reconcilesImageTemplate(m metav1.ObjectMeta, t Target, station, org string) bool {
-	if !t.Preinstalled || t.AppID != "image-mcp" || t.Version != "0.2.16" || t.InstallationID == "" || t.Deployment == nil {
+func reconcilesHistoricalTemplate(m metav1.ObjectMeta, t Target, station, org string) bool {
+	sourceVersion := (t.AppID == "image-mcp" && t.Version == "0.2.16") ||
+		(t.AppID == "video-mcp" && t.Version == "0.17.28")
+	if !t.Preinstalled || !sourceVersion || t.InstallationID == "" || t.Deployment == nil {
 		return false
 	}
 	old := t.Deployment.Annotations["station.verdantflare.com/reconciles-template-hash"]
