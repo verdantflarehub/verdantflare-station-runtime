@@ -9,7 +9,7 @@ import (
 )
 
 func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
-	for _, scenario := range []string{"valid", "valid-target", "valid-rebased-source", "valid-rebased-target", "missing-sidecar", "wrong-sidecar-image", "invalid-sidecar-digest", "wrong-name", "duplicate", "primary-digest", "wrong-repository", "wrong-version", "extra-container"} {
+	for _, scenario := range []string{"valid", "valid-target", "valid-rebased-source", "valid-rebased-target", "valid-filter-target", "missing-sidecar", "wrong-sidecar-image", "invalid-sidecar-digest", "wrong-name", "duplicate", "primary-digest", "wrong-repository", "wrong-version", "extra-container"} {
 		t.Run(scenario, func(t *testing.T) {
 			options, now, key := builderFixture(t)
 			for _, name := range []string{"manifest.yaml", "workload.yaml", "prepare.json", "package.json", "delivery.json"} {
@@ -35,6 +35,9 @@ func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
 				}
 				if scenario == "valid-rebased-source" {
 					text = strings.ReplaceAll(text, "0.17.28", "0.17.30")
+				}
+				if scenario == "valid-filter-target" {
+					text = strings.ReplaceAll(text, "0.17.28", "0.17.32")
 				}
 				if scenario == "valid-rebased-target" {
 					text = strings.ReplaceAll(text, "0.17.28", "0.17.31")

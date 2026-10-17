@@ -19,7 +19,7 @@ import (
 const videoAuthorityDigest = "sha256:b4a6eed372cca5ede2a3722a45de210b3bac223050e3e478e89943f997b0a4a4"
 
 func videoStoppedPair(source, target string) bool {
-	return (source == "0.17.28" && target == "0.17.29") || (source == "0.17.30" && target == "0.17.31")
+	return (source == "0.17.28" && target == "0.17.29") || (source == "0.17.30" && (target == "0.17.31" || target == "0.17.32"))
 }
 
 func videoPodContainerMatches(actual, want corev1.Container, pod corev1.Pod) bool {
