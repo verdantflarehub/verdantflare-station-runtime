@@ -63,10 +63,10 @@ func videoStoppedFixtureFor(t *testing.T, sourceVersion, targetVersion string) (
 }
 
 func TestVideoStoppedRebasedPair(t *testing.T) {
-	for _, pair := range [][2]string{{"0.17.30", "0.17.31"}, {"0.17.30", "0.17.32"}, {"0.17.30", "0.17.33"}, {"0.17.28", "0.17.31"}, {"0.17.30", "0.17.29"}, {"0.17.31", "0.17.32"}} {
+	for _, pair := range [][2]string{{"0.17.30", "0.17.31"}, {"0.17.30", "0.17.32"}, {"0.17.30", "0.17.33"}, {"0.17.28", "0.17.31"}, {"0.17.30", "0.17.29"}, {"0.17.31", "0.17.32"}, {"0.17.31", "0.17.33"}} {
 		f, s := videoStoppedFixtureFor(t, pair[0], pair[1])
 		err := s.Check(context.Background(), f.b, &StoppedReplacement{f.d}, f.c, false, true)
-		if (err == nil) != (pair[0] == "0.17.30" && (pair[1] == "0.17.31" || pair[1] == "0.17.32")) {
+		if (err == nil) != ((pair[0] == "0.17.30" && (pair[1] == "0.17.31" || pair[1] == "0.17.32")) || (pair[0] == "0.17.31" && pair[1] == "0.17.32")) {
 			t.Fatal("unexpected pair admission", pair, err)
 		}
 	}
