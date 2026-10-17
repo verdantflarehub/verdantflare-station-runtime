@@ -30,13 +30,20 @@ type provenance struct {
 }
 
 type delivery struct {
-	SchemaVersion int    `json:"schemaVersion"`
-	AppID         string `json:"appId"`
-	AppVersion    string `json:"appVersion"`
-	Image         string `json:"image"`
-	ImageDigest   string `json:"imageDigest"`
-	Repository    string `json:"repository"`
-	Revision      string `json:"revision"`
+	SchemaVersion int                 `json:"schemaVersion"`
+	AppID         string              `json:"appId"`
+	AppVersion    string              `json:"appVersion"`
+	Image         string              `json:"image"`
+	ImageDigest   string              `json:"imageDigest"`
+	Repository    string              `json:"repository"`
+	Revision      string              `json:"revision"`
+	Components    []deliveryComponent `json:"components,omitempty"`
+}
+
+type deliveryComponent struct {
+	Name        string `json:"name"`
+	Image       string `json:"image"`
+	ImageDigest string `json:"imageDigest"`
 }
 
 var materialDigest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
@@ -46,6 +53,9 @@ var sourceRevision = regexp.MustCompile(`^[a-f0-9]{40}$`)
 func sourceRepository(appID string) string {
 	if appID == "image-mcp" {
 		return "verdantflarehub/verdantflare-app-image"
+	}
+	if appID == "video-mcp" {
+		return "verdantflarehub/verdantflare-app-video"
 	}
 	return "verdantflarehub/verdantflare-app-" + appID
 }
@@ -80,10 +90,33 @@ func verifyProvenance(root *os.Root, raw []byte, target executor.Target) error {
 		}
 		if i == 1 {
 			var d delivery
-			if strictjson.Decode(bytes.NewReader(content), 64<<10, &d) != nil || d.SchemaVersion != 1 || d.AppID != p.AppID || d.AppVersion != p.AppVersion || !materialDigest.MatchString(d.ImageDigest) || !sourceRevision.MatchString(d.Revision) || d.Repository != sourceRepository(p.AppID) || len(target.Deployment.Spec.Template.Spec.Containers) != 1 || len(target.Deployment.Spec.Template.Spec.InitContainers) != 0 || d.Image != target.Deployment.Spec.Template.Spec.Containers[0].Image {
+			if strictjson.Decode(bytes.NewReader(content), 64<<10, &d) != nil || d.SchemaVersion != 1 || d.AppID != p.AppID || d.AppVersion != p.AppVersion || !materialDigest.MatchString(d.ImageDigest) || !sourceRevision.MatchString(d.Revision) || d.Repository != sourceRepository(p.AppID) || !deliveryContainersMatch(d, target) {
 				return ErrInvalid
 			}
 		}
 	}
 	return nil
+}
+
+func deliveryContainersMatch(d delivery, target executor.Target) bool {
+	if target.Deployment == nil || len(target.Deployment.Spec.Template.Spec.InitContainers) != 0 {
+		return false
+	}
+	containers := target.Deployment.Spec.Template.Spec.Containers
+	if target.AppID != "video-mcp" {
+		return len(containers) == 1 && len(d.Components) == 0 && d.Image == containers[0].Image
+	}
+	// This historical source includes a separate authorization callback sidecar.
+	// Both exact image references and digests must be bound by provenance.
+	if target.Version != "0.17.28" || len(containers) != 2 || len(d.Components) != 2 ||
+		containers[0].Name != "api" || containers[1].Name != "artifact-authority" {
+		return false
+	}
+	for i, c := range containers {
+		component := d.Components[i]
+		if component.Name != c.Name || component.Image != c.Image || !materialDigest.MatchString(component.ImageDigest) {
+			return false
+		}
+	}
+	return d.Image == d.Components[0].Image && d.ImageDigest == d.Components[0].ImageDigest
 }
