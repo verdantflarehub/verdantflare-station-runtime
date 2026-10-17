@@ -70,7 +70,7 @@ func (r *StoppedReplacement) liveService(ctx context.Context, original *corev1.S
 		compare.Spec.Selector = original.Spec.Selector
 	}
 	want := original
-	if r.targetMarked(live.Annotations) && chatgptExecutionPorts(r.Source, r.Target) {
+	if r.targetMarked(live.Annotations) && stoppedServicePortsChange(r.Source, r.Target) {
 		want = original.DeepCopy()
 		want.Spec.Ports = r.Target.Services[0].Spec.Ports
 	}
@@ -234,7 +234,7 @@ func (r *StoppedReplacement) Open(ctx context.Context, c ManagementCheckpoint, t
 			continue
 		}
 		live.Spec.Selector = original.Spec.Selector
-		if chatgptExecutionPorts(r.Source, r.Target) {
+		if stoppedServicePortsChange(r.Source, r.Target) {
 			live.Spec.Ports = original.DeepCopy().Spec.Ports
 			if target {
 				live.Spec.Ports = r.Target.Services[0].DeepCopy().Spec.Ports

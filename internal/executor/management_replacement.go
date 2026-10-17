@@ -60,8 +60,8 @@ func newManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 		return nil, ErrManagementReplacement
 	}
 	// Management-only compatibility deliberately permits image/env changes only.
-	// Network's immutable consumer config reference has a narrow read-only
-	// exception. All other volume, command, resource and security fields match.
+	// Network's immutable consumer config reference and Project's fixed peer
+	// reader have narrow exceptions. Other deployment constraints still match.
 	compare := target.Deployment.DeepCopy()
 	if stopped && normalizeNetworkConsumerConfig(k, source, compare) != nil {
 		return nil, ErrManagementReplacement
@@ -78,13 +78,16 @@ func newManagementReplacement(k *Kubernetes, source, target Target, in *pb.AppRe
 			pair[1][i].Image, pair[1][i].Env = pair[0][i].Image, pair[0][i].Env
 		}
 	}
+	if stopped && projectReadPorts(source, target) {
+		compare.Spec.Template.Spec.Containers[0].Ports = source.Deployment.Spec.Template.Spec.Containers[0].Ports
+	}
 	if !preinstalledDeploymentCompatible(source.Deployment, compare) || len(source.Services) != len(target.Services) {
 		return nil, ErrManagementReplacement
 	}
 	for i, service := range source.Services {
 		other := target.Services[i]
 		if service == nil || other == nil || service.Name != other.Name || service.Namespace != other.Namespace ||
-			(!reflect.DeepEqual(service.Spec, other.Spec) && !(stopped && chatgptExecutionPorts(source, target))) {
+			(!reflect.DeepEqual(service.Spec, other.Spec) && !(stopped && stoppedServicePortsChange(source, target))) {
 			return nil, ErrManagementReplacement
 		}
 	}
