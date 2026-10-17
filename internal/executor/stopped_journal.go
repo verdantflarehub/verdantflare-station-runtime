@@ -10,6 +10,12 @@ import (
 // needs no maintenance endpoints or schema changes. Each retry observes the
 // resources from the saved checkpoint; it never creates another installation.
 func advanceStopped(ctx context.Context, r managementRecord, b ManagementBinding, d *StoppedReplacement, checks stoppedChecker, mode string) (managementRecord, error) {
+	if r.Phase == "rejected_preflight" {
+		if mode != "prepare" || r.Checkpoint != nil {
+			return r, ErrManagementReplacement
+		}
+		return r, nil
+	}
 	if mode == "release_source" || mode == "release_target" {
 		target := mode == "release_target"
 		prepared, releasing, released := "restored", "releasing_source", "released_source"
@@ -65,6 +71,12 @@ func advanceStopped(ctx context.Context, r managementRecord, b ManagementBinding
 				r.Phase = "canceled_source"
 				err = nil
 			}
+		}
+		// Capture and Check are read-only. With no durable checkpoint, a
+		// definite conflict can be rejected without touching the drifted app.
+		if r.Checkpoint == nil && errors.Is(err, ErrManagementReplacement) {
+			r.Phase = "rejected_preflight"
+			err = nil
 		}
 	case "canceled_source":
 		// No routing or process change was made for a busy preflight.

@@ -3,6 +3,9 @@ package executor
 import (
 	"context"
 	"errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	ktesting "k8s.io/client-go/testing"
 	"testing"
 )
 
@@ -135,5 +138,46 @@ func TestMediaStoppedJournalDoesNotStopBusySourceOrRollbackTarget(t *testing.T) 
 				t.Fatal("busy media process was stopped", app, err)
 			}
 		}
+	}
+}
+
+func TestStoppedPreflightDriftIsDurablyRejectedWithoutWrites(t *testing.T) {
+	d, k, c := stoppedFixture(t)
+	ctx := context.Background()
+	live, _ := k.AppsV1().Deployments(c.Deployment.Namespace).Get(ctx, c.Deployment.Name, metav1.GetOptions{})
+	live.Spec.Template.Spec.Containers[0].Image = "unexpected/newer:version"
+	_, _ = k.AppsV1().Deployments(live.Namespace).Update(ctx, live, metav1.UpdateOptions{})
+	k.ClearActions()
+	r := managementRecord{ManagementProgress: ManagementProgress{Phase: "checking", Revision: 1}}
+	checks := &stoppedCheckFake{}
+	for i := 0; i < 2; i++ {
+		var err error
+		r, err = advanceStopped(ctx, savedManagement(t, r), ManagementBinding{}, d, checks, "prepare")
+		if err != nil || r.Phase != "rejected_preflight" || r.Checkpoint != nil {
+			t.Fatal("drift not terminal", r.Phase, err)
+		}
+	}
+	if len(checks.calls) != 0 {
+		t.Fatal("checked a drifted process")
+	}
+	for _, a := range k.Actions() {
+		if a.GetVerb() != "get" {
+			t.Fatal("rejection mutated resources", a.GetVerb())
+		}
+	}
+	if _, err := advanceStopped(ctx, r, ManagementBinding{}, d, checks, "restore"); err == nil {
+		t.Fatal("rejected drift restored source")
+	}
+}
+
+func TestStoppedPreflightNetworkFailureRemainsRetryable(t *testing.T) {
+	d, k, _ := stoppedFixture(t)
+	k.PrependReactor("get", "deployments", func(ktesting.Action) (bool, runtime.Object, error) {
+		return true, nil, errors.New("network unavailable")
+	})
+	r := managementRecord{ManagementProgress: ManagementProgress{Phase: "checking", Revision: 1}}
+	got, err := advanceStopped(context.Background(), r, ManagementBinding{}, d, &stoppedCheckFake{}, "prepare")
+	if err == nil || got.Phase != "checking" || got.Checkpoint != nil {
+		t.Fatal("unknown capture was rejected", got.Phase, err)
 	}
 }

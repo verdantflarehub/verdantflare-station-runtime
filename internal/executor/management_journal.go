@@ -105,7 +105,7 @@ func managementHash(b ManagementBinding) []byte {
 }
 
 func managementPhase(phase string) bool {
-	return slices.Contains([]string{"checking", "sealing", "canceling_source", "canceled_source", "applying", "verifying", "prepared", "restoring", "restored", "recovery_required", "releasing_source", "releasing_target", "released_source", "released_target"}, phase)
+	return slices.Contains([]string{"rejected_preflight", "checking", "sealing", "canceling_source", "canceled_source", "applying", "verifying", "prepared", "restoring", "restored", "recovery_required", "releasing_source", "releasing_target", "released_source", "released_target"}, phase)
 }
 
 func decodeManagementRecord(row pgx.Row) (managementRecord, error) {
@@ -134,7 +134,10 @@ func decodeManagementRecord(row pgx.Row) (managementRecord, error) {
 		}
 		r.Checkpoint = &c
 	}
-	if r.Checkpoint == nil && !slices.Contains([]string{"checking", "restored", "releasing_source", "released_source"}, r.Phase) {
+	if r.Checkpoint == nil && !slices.Contains([]string{"rejected_preflight", "checking", "restored", "releasing_source", "released_source"}, r.Phase) {
+		return r, ErrManagementReplacement
+	}
+	if r.Phase == "rejected_preflight" && r.Checkpoint != nil {
 		return r, ErrManagementReplacement
 	}
 	return r, nil

@@ -71,7 +71,7 @@ func (j *ManagementJournal) ReconcileStep(ctx context.Context, step ManagementSt
 	case "prepare":
 		if phase == "canceling_source" {
 			phase = "sealing"
-		} else if phase == "canceled_source" {
+		} else if phase == "canceled_source" || phase == "rejected_preflight" {
 			phase = "rejected"
 		}
 		if !slices.Contains([]string{"rejected", "checking", "sealing", "applying", "verifying", "prepared", "recovery_required"}, phase) {
