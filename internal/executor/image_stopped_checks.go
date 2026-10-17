@@ -16,7 +16,7 @@ func (s *stoppedHTTPChecks) checkImage(ctx context.Context, b ManagementBinding,
 		release, t = b.Target, r.Target
 	}
 	// Only versions preserving unknown legacy submissions can be upgrade targets.
-	if b.Target.AppVersion != "0.2.18" && b.Target.AppVersion != "0.2.20" && b.Target.AppVersion != "0.2.21" && b.Target.AppVersion != "0.2.22" && b.Target.AppVersion != "0.2.23" {
+	if b.Target.AppVersion != "0.2.18" && b.Target.AppVersion != "0.2.20" && b.Target.AppVersion != "0.2.21" && b.Target.AppVersion != "0.2.22" && b.Target.AppVersion != "0.2.23" && b.Target.AppVersion != "0.2.24" {
 		return ErrManagementReplacement
 	}
 	u, err := url.Parse(t.ActivityURL)

@@ -9,12 +9,12 @@ import (
 )
 
 func TestImageStoppedChecksBoundReadOnlyEvidence(t *testing.T) {
-	for _, version := range []string{"0.2.16", "0.2.18", "0.2.20", "0.2.21", "0.2.22", "0.2.23"} {
+	for _, version := range []string{"0.2.16", "0.2.18", "0.2.20", "0.2.21", "0.2.22", "0.2.23", "0.2.24"} {
 		t.Run(version, func(t *testing.T) {
 			for _, scenario := range []string{"ready", "busy", "wrong image", "restart", "redirect", "unsafe target"} {
 				t.Run(scenario, func(t *testing.T) {
 					f, checker, _ := stoppedChecksFixtureFor(t, "image-mcp")
-					f.b.Source.AppVersion, f.b.Target.AppVersion = version, "0.2.23"
+					f.b.Source.AppVersion, f.b.Target.AppVersion = version, "0.2.24"
 					f.b.Source.DashboardDigest = imageDashboardDigest([]byte("image html"))
 					for _, target := range []*Target{&f.d.Source, &f.d.Target} {
 						target.ActivityURL = "http://" + target.Deployment.Name + "." + target.Deployment.Namespace + ".svc.cluster.local:8000/api/tasks/stats"

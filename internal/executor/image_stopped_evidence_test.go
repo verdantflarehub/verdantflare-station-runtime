@@ -7,7 +7,7 @@ import (
 )
 
 func TestImageStoppedEvidence(t *testing.T) {
-	for _, version := range []string{"0.2.16", "0.2.18", "0.2.20", "0.2.21", "0.2.22", "0.2.23"} {
+	for _, version := range []string{"0.2.16", "0.2.18", "0.2.20", "0.2.21", "0.2.22", "0.2.23", "0.2.24"} {
 		t.Run(version, func(t *testing.T) {
 			for _, scenario := range []string{"idle", "queued", "unknown state", "missing count", "negative", "fraction", "duplicate", "overflow", "wrong version", "wrong service", "changed page", "transport"} {
 				t.Run(scenario, func(t *testing.T) {
