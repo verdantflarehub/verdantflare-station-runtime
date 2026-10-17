@@ -18,6 +18,10 @@ import (
 
 const videoAuthorityDigest = "sha256:b4a6eed372cca5ede2a3722a45de210b3bac223050e3e478e89943f997b0a4a4"
 
+func videoStoppedPair(source, target string) bool {
+	return (source == "0.17.28" && target == "0.17.29") || (source == "0.17.30" && target == "0.17.31")
+}
+
 func videoPodContainerMatches(actual, want corev1.Container, pod corev1.Pod) bool {
 	if reflect.DeepEqual(actual, want) {
 		return true
@@ -56,7 +60,7 @@ func stoppedContainerDigests(r *StoppedReplacement, primary string) ([]string, e
 	if r.Source.AppID != "video-mcp" {
 		return []string{primary}, nil
 	}
-	if r.Source.Version != "0.17.28" || r.Target.Version != "0.17.29" || r.Target.AppID != "video-mcp" || r.Source.Deployment == nil || r.Target.Deployment == nil {
+	if !videoStoppedPair(r.Source.Version, r.Target.Version) || r.Target.AppID != "video-mcp" || r.Source.Deployment == nil || r.Target.Deployment == nil {
 		return nil, ErrManagementReplacement
 	}
 	source, target := r.Source.Deployment.Spec.Template.Spec.Containers, r.Target.Deployment.Spec.Template.Spec.Containers
@@ -87,7 +91,7 @@ func (s *stoppedHTTPChecks) checkVideo(ctx context.Context, b ManagementBinding,
 	if target {
 		release, t = b.Target, r.Target
 	}
-	if b.Source.AppVersion != "0.17.28" || b.Target.AppVersion != "0.17.29" || release.AppVersion != t.Version {
+	if !videoStoppedPair(b.Source.AppVersion, b.Target.AppVersion) || release.AppVersion != t.Version {
 		return ErrManagementReplacement
 	}
 	u, err := url.Parse(t.ActivityURL)

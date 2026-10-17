@@ -9,7 +9,7 @@ import (
 )
 
 func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
-	for _, scenario := range []string{"valid", "valid-target", "missing-sidecar", "wrong-sidecar-image", "invalid-sidecar-digest", "wrong-name", "duplicate", "primary-digest", "wrong-repository", "wrong-version", "extra-container"} {
+	for _, scenario := range []string{"valid", "valid-target", "valid-rebased-source", "valid-rebased-target", "missing-sidecar", "wrong-sidecar-image", "invalid-sidecar-digest", "wrong-name", "duplicate", "primary-digest", "wrong-repository", "wrong-version", "extra-container"} {
 		t.Run(scenario, func(t *testing.T) {
 			options, now, key := builderFixture(t)
 			for _, name := range []string{"manifest.yaml", "workload.yaml", "prepare.json", "package.json", "delivery.json"} {
@@ -32,6 +32,12 @@ func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
 				}
 				if scenario == "valid-target" {
 					text = strings.ReplaceAll(text, "0.17.28", "0.17.29")
+				}
+				if scenario == "valid-rebased-source" {
+					text = strings.ReplaceAll(text, "0.17.28", "0.17.30")
+				}
+				if scenario == "valid-rebased-target" {
+					text = strings.ReplaceAll(text, "0.17.28", "0.17.31")
 				}
 				if err := os.WriteFile(path, []byte(text), 0600); err != nil {
 					t.Fatal(err)
@@ -85,10 +91,11 @@ func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err := Build(options, now, key)
-			if (err == nil) != (scenario == "valid" || scenario == "valid-target") {
+			valid := strings.HasPrefix(scenario, "valid")
+			if (err == nil) != valid {
 				t.Fatal("signing admission mismatch", err)
 			}
-			if scenario != "valid" && scenario != "valid-target" {
+			if !valid {
 				if _, err := os.Stat(options.Output); !os.IsNotExist(err) {
 					t.Fatal("invalid source created signed output")
 				}

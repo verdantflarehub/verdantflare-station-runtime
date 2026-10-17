@@ -89,7 +89,7 @@ func adoptable(m metav1.ObjectMeta, t Target, station, org string) bool {
 // before making metadata-only patches.
 func reconcilesHistoricalTemplate(m metav1.ObjectMeta, t Target, station, org string) bool {
 	sourceVersion := (t.AppID == "image-mcp" && t.Version == "0.2.16") ||
-		(t.AppID == "video-mcp" && t.Version == "0.17.28")
+		(t.AppID == "video-mcp" && (t.Version == "0.17.28" || t.Version == "0.17.30"))
 	if !t.Preinstalled || !sourceVersion || t.InstallationID == "" || t.Deployment == nil {
 		return false
 	}

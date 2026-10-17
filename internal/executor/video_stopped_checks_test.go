@@ -13,8 +13,12 @@ import (
 )
 
 func videoStoppedFixture(t *testing.T) (*maintenanceFixture, *stoppedHTTPChecks) {
+	return videoStoppedFixtureFor(t, "0.17.28", "0.17.29")
+}
+
+func videoStoppedFixtureFor(t *testing.T, sourceVersion, targetVersion string) (*maintenanceFixture, *stoppedHTTPChecks) {
 	f := newMaintenanceFixtureFor(t, func(source, target *Target) {
-		source.Version, target.Version = "0.17.28", "0.17.29"
+		source.Version, target.Version = sourceVersion, targetVersion
 		for _, entry := range []*Target{source, target} {
 			entry.AppID = "video-mcp"
 			entry.InstallationBindings = []InstallationBinding{{"api", "APP_INSTALLATION", "installation_id"}, {"api", "APP_STATION", "station_id"}, {"api", "APP_VERSION", "app_version"}}
@@ -46,16 +50,26 @@ func videoStoppedFixture(t *testing.T) (*maintenanceFixture, *stoppedHTTPChecks)
 			t.Fatal("unbound exec")
 		}
 		f.calls++
-		return []byte(fmt.Sprintf(`{"schema_version":1,"scope":"installation","active_count":0,"submitted_count":191,"app_version":"0.17.28","dashboard_digest":%q}`, f.b.Source.DashboardDigest)), nil
+		return []byte(fmt.Sprintf(`{"schema_version":1,"scope":"installation","active_count":0,"submitted_count":191,"app_version":%q,"dashboard_digest":%q}`, sourceVersion, f.b.Source.DashboardDigest)), nil
 	}
 	s := newStoppedChecks()
 	s.client.Transport = maintenanceRoundTrip(func(req *http.Request) (*http.Response, error) {
 		if req.Method != "GET" || req.URL.Host != "10.0.0.9:8000" || req.URL.Path != "/health" || req.Header.Get("Authorization") != "Bearer "+strings.Repeat("test-only-", 5) {
 			t.Fatal("unbound health request")
 		}
-		return proofResponse(200, `{"status":"ok","version":"0.17.28","contract_version":"v1"}`), nil
+		return proofResponse(200, fmt.Sprintf(`{"status":"ok","version":%q,"contract_version":"v1"}`, sourceVersion)), nil
 	})
 	return f, s
+}
+
+func TestVideoStoppedRebasedPair(t *testing.T) {
+	for _, pair := range [][2]string{{"0.17.30", "0.17.31"}, {"0.17.28", "0.17.31"}, {"0.17.30", "0.17.29"}, {"0.17.31", "0.17.32"}} {
+		f, s := videoStoppedFixtureFor(t, pair[0], pair[1])
+		err := s.Check(context.Background(), f.b, &StoppedReplacement{f.d}, f.c, false, true)
+		if (err == nil) != (pair[0] == "0.17.30" && pair[1] == "0.17.31") {
+			t.Fatal("unexpected pair admission", pair, err)
+		}
+	}
 }
 
 func TestVideoStoppedChecksRejectUnsafeEvidenceAndContainers(t *testing.T) {
