@@ -209,8 +209,15 @@ func (j *ManagementJournal) reconcile(ctx context.Context, operation, mode, expe
 	}
 	source, ok := j.Targets[b.Source.AppID+"@"+b.Source.AppVersion]
 	target, targetOK := j.Targets[b.Target.AppID+"@"+b.Target.AppVersion]
-	if !ok || !targetOK || b.Source.TemplateDigest != "sha256:"+hex.EncodeToString(source.Hash[:]) || b.Target.TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) {
+	if !ok || !targetOK || b.Source.TemplateDigest != "sha256:"+hex.EncodeToString(source.Hash[:]) {
 		return empty, ErrManagementReplacement
+	}
+	if b.Target.TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) {
+		// A known target with a different canonical digest is a definite
+		// preflight conflict. Persist rejection only while the original operation
+		// proves it has never captured a checkpoint or changed any resources.
+		// Missing registrations and source drift remain fail-closed errors.
+		return rejectManagementTemplate(ctx, tx, b, corePhase, mode)
 	}
 	stopped := b.Source.ReleaseKind == "dashboard-release" && b.Target.ReleaseKind == "dashboard-release"
 	if (!stopped && j.Maintenance == nil) || (b.Source.ReleaseKind != b.Target.ReleaseKind) || (b.Source.ReleaseKind != "" && !stopped) ||
