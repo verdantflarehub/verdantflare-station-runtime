@@ -72,14 +72,14 @@ func TestAppCenterGuardValidationAndHash(t *testing.T) {
 			t.Fatal("invalid guard accepted")
 		}
 	}
-	for _, action := range []string{"adopt", "delete", "upgrade", "rollback"} {
+	for _, action := range []string{"adopt", "upgrade", "rollback"} {
 		v := proto.Clone(r).(*pb.AppCenterRequest)
 		v.Command.Action = action
 		if status.Code(validateAppCenterRequest(v)) != codes.FailedPrecondition {
 			t.Fatal("unsupported guard action accepted", action)
 		}
 	}
-	for _, action := range []string{"stop", "restart"} {
+	for _, action := range []string{"stop", "restart", "delete"} {
 		v := proto.Clone(r).(*pb.AppCenterRequest)
 		v.Command.Action = action
 		if status.Code(validateAppCenterRequest(v)) != codes.InvalidArgument {
@@ -277,5 +277,31 @@ func TestAppCenterKubernetesStopAndRestart(t *testing.T) {
 	out, err = driver.Step(ctx, app, "restart", "op-restart", r.Command.StationId, r.Command.OrganizationId)
 	if err != nil || out.Status != "succeeded" || out.Phase != "completed" {
 		t.Fatal("completed restart failed", out, err)
+	}
+
+	// 6. Delete: deletes owned Service and Deployment while retaining PVC
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: live.Namespace}, Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "test"}}}
+	app.Services = []*corev1.Service{svc.DeepCopy()}
+	mark(&svc.ObjectMeta, app, r.Command.StationId, r.Command.OrganizationId)
+	c.CoreV1().Services(live.Namespace).Create(ctx, svc, metav1.CreateOptions{})
+	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "app-data", Namespace: live.Namespace}}
+	c.CoreV1().PersistentVolumeClaims(live.Namespace).Create(ctx, pvc, metav1.CreateOptions{})
+
+	if err := driver.CheckAppCenter(ctx, app, "delete", "op-delete", r.Command.StationId, r.Command.OrganizationId, true); err != nil {
+		t.Fatal("initial delete check failed", err)
+	}
+	out, err = driver.Step(ctx, app, "delete", "op-delete", r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "running" || out.Phase != "stopping" {
+		t.Fatal("initial delete step failed", out, err)
+	}
+	if err := driver.CheckAppCenter(ctx, app, "delete", "op-delete", r.Command.StationId, r.Command.OrganizationId, false); err != nil {
+		t.Fatal("recovery delete check failed", err)
+	}
+	out, err = driver.Step(ctx, app, "delete", "op-delete", r.Command.StationId, r.Command.OrganizationId)
+	if err != nil || out.Status != "succeeded" || out.Phase != "completed" {
+		t.Fatal("completed delete step failed", out, err)
+	}
+	if _, err := c.CoreV1().PersistentVolumeClaims(live.Namespace).Get(ctx, "app-data", metav1.GetOptions{}); err != nil {
+		t.Fatal("PVC was not retained on delete", err)
 	}
 }

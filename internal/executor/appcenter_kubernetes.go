@@ -14,35 +14,35 @@ import (
 const appCenterOperationKey = "station.verdantflare.com/appcenter-creation-operation"
 
 func appCenterWorkloadMatches(t Target, live *appsv1.Deployment, action, operation, station, org string) bool {
-	if live.DeletionTimestamp != nil || !owned(live.Annotations, t, station, org) || !preinstalledDeploymentCompatible(t.Deployment, live) {
+	if (live.DeletionTimestamp != nil && action != "delete") || !owned(live.Annotations, t, station, org) || !preinstalledDeploymentCompatible(t.Deployment, live) {
 		return false
 	}
 	if action == "install" {
 		return live.Annotations[appCenterOperationKey] == operation
 	}
-	return (action == "start" || action == "stop" || action == "restart") && string(live.UID) == t.ExpectedUID
+	return (action == "start" || action == "stop" || action == "restart" || action == "delete") && string(live.UID) == t.ExpectedUID
 }
 
 func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, operation, station, org string) bool {
-	return live.DeletionTimestamp == nil && owned(live.Annotations, t, station, org) &&
+	return (live.DeletionTimestamp == nil || action == "delete") && owned(live.Annotations, t, station, org) &&
 		preinstalledServiceCompatible(wanted, live) && (action != "install" || live.Annotations[appCenterOperationKey] == operation)
 }
 
 func (k *Kubernetes) CheckAppCenter(ctx context.Context, t Target, action, operation, station, org string, first bool) error {
 	conflict := status.Error(codes.FailedPrecondition, "Protected workload identity or ownership changed")
 	if !t.AppCenter || (t.InstallationID == "" && !(first && action == "install")) || t.Deployment == nil ||
-		(action != "install" && action != "start" && action != "stop" && action != "restart") ||
-		((action == "start" || action == "stop" || action == "restart") && t.ExpectedUID == "") {
+		(action != "install" && action != "start" && action != "stop" && action != "restart" && action != "delete") ||
+		((action == "start" || action == "stop" || action == "restart" || action == "delete") && t.ExpectedUID == "") {
 		return conflict
 	}
 	live, err := k.Client.AppsV1().Deployments(t.Deployment.Namespace).Get(ctx, t.Deployment.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		if action != "install" {
+		if action != "install" && !(action == "delete" && !first) {
 			return conflict
 		}
 	} else if err != nil {
 		return status.Error(codes.Unavailable, "Protected workload observation unavailable")
-	} else if (first && action == "install") || !appCenterWorkloadMatches(t, live, action, operation, station, org) {
+	} else if (first && action == "install") || (first && action == "delete" && live.DeletionTimestamp != nil) || !appCenterWorkloadMatches(t, live, action, operation, station, org) {
 		return conflict
 	}
 	for _, wanted := range t.Services {
@@ -53,7 +53,7 @@ func (k *Kubernetes) CheckAppCenter(ctx context.Context, t Target, action, opera
 		if err != nil {
 			return status.Error(codes.Unavailable, "Protected Service observation unavailable")
 		}
-		if (first && action == "install") || !appCenterServiceMatches(t, wanted, live, action, operation, station, org) {
+		if (first && action == "install") || (first && action == "delete" && live.DeletionTimestamp != nil) || !appCenterServiceMatches(t, wanted, live, action, operation, station, org) {
 			return conflict
 		}
 	}

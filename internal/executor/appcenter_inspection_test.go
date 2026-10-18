@@ -44,7 +44,7 @@ func TestAppCenterInspectionReadOnlyInstall(t *testing.T) {
 			case "installation-injected":
 				in.InstallationId = request.Command.InstallationId
 			case "unsupported-action":
-				in.Action = "restart"
+				in.Action = "adopt"
 			}
 			svc := &Service{StationID: request.Command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}}
 			out, err := svc.InspectBound(context.Background(), in)

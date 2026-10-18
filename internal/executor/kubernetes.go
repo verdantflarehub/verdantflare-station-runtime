@@ -104,8 +104,11 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
 		}
 	}
+	if t.AppCenter && action == "delete" {
+		return k.stepAppCenterDelete(ctx, t, operation, station, org)
+	}
 	// Disruptive commands without protected execution fail closed.
-	if (!t.AppCenter && (action == "stop" || action == "restart" || action == "delete")) || (t.AppCenter && action == "delete") {
+	if !t.AppCenter && (action == "stop" || action == "restart" || action == "delete") {
 		return activityGuard(ctx, t), nil
 	}
 	if action != "adopt" && t.DiskBytes > 0 {
@@ -285,6 +288,50 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		return Result{"succeeded", "completed", "", ""}, nil
 	}
 	return Result{"running", "starting", "", ""}, nil
+}
+func (k *Kubernetes) stepAppCenterDelete(ctx context.Context, t Target, operation, station, org string) (Result, error) {
+	deployments := k.Client.AppsV1().Deployments(t.Deployment.Namespace)
+	live, err := deployments.Get(ctx, t.Deployment.Name, metav1.GetOptions{})
+	workloadGone := false
+	if apierrors.IsNotFound(err) {
+		workloadGone = true
+	} else if err != nil {
+		return Result{}, err
+	} else if !appCenterWorkloadMatches(t, live, "delete", operation, station, org) || !sameImages(live, t.Deployment) {
+		return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
+	}
+	servicesGone := true
+	for _, wanted := range t.Services {
+		services := k.Client.CoreV1().Services(wanted.Namespace)
+		existing, e := services.Get(ctx, wanted.Name, metav1.GetOptions{})
+		if apierrors.IsNotFound(e) {
+			continue
+		}
+		if e != nil {
+			return Result{}, e
+		}
+		if !appCenterServiceMatches(t, wanted, existing, "delete", operation, station, org) {
+			return failed("CONFLICT", "Service differs from the protected installation"), nil
+		}
+		servicesGone = false
+		if existing.DeletionTimestamp == nil {
+			if delErr := services.Delete(ctx, wanted.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+				return Result{}, delErr
+			}
+		}
+	}
+	if !workloadGone {
+		if live.DeletionTimestamp == nil {
+			if delErr := deployments.Delete(ctx, t.Deployment.Name, metav1.DeleteOptions{}); delErr != nil && !apierrors.IsNotFound(delErr) {
+				return Result{}, delErr
+			}
+		}
+		return Result{"running", "stopping", "", ""}, nil
+	}
+	if !servicesGone {
+		return Result{"running", "stopping", "", ""}, nil
+	}
+	return Result{"succeeded", "completed", "", ""}, nil
 }
 func sameImages(a, b *appsv1.Deployment) bool {
 	ac := append(append([]corev1.Container{}, a.Spec.Template.Spec.Containers...), a.Spec.Template.Spec.InitContainers...)

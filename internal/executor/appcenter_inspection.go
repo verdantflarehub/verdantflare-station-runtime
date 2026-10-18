@@ -37,7 +37,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		if in.InstallationId != "" {
 			return nil, invalid
 		}
-	case "start", "stop", "restart":
+	case "start", "stop", "restart", "delete":
 		id, err := uuid.Parse(in.InstallationId)
 		if err != nil || id.Version() != 7 || id.String() != in.InstallationId {
 			return nil, invalid
@@ -51,7 +51,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		t.DiskBytes > 0 || t.GPU > 0 || len(t.Models) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "Protected execution template or preparation support unavailable")
 	}
-	if in.Action == "start" || in.Action == "stop" || in.Action == "restart" {
+	if in.Action == "start" || in.Action == "stop" || in.Action == "restart" || in.Action == "delete" {
 		var err error
 		t, err = bindInstallation(t, &pb.AppRequest{InstallationId: in.InstallationId, StationId: in.StationId, OrganizationId: in.OrganizationId, AppId: in.AppId, AppVersion: in.AppVersion})
 		if err != nil {
@@ -102,9 +102,9 @@ func (k *Kubernetes) InspectAppCenter(ctx context.Context, t Target, action, sta
 				return nil, status.Error(codes.FailedPrecondition, "Stop requires an observed running workload")
 			}
 			out.State = "running"
-		case "restart":
+		case "restart", "delete":
 			if !isRunning && !isStopped {
-				return nil, status.Error(codes.FailedPrecondition, "Restart requires an observed running or stopped workload")
+				return nil, status.Error(codes.FailedPrecondition, "Action requires an observed running or stopped workload")
 			}
 			if isRunning {
 				out.State = "running"
