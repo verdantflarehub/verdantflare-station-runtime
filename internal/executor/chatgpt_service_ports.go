@@ -29,7 +29,7 @@ func chatgptExecutionPorts(source, target Target) bool {
 		}
 	}
 	for _, s := range []*corev1.Service{a, b} {
-		if s == nil || s.Name != "chatgpt-channel" || s.Namespace != "verdantflare-chatgpt" ||
+		if s == nil || s.Name != "chatgpt-channel" || !validName(s.Namespace) || s.Namespace == "default" || s.Namespace != a.Namespace ||
 			s.Spec.Type != corev1.ServiceTypeClusterIP || s.Spec.ExternalName != "" || len(s.Spec.ExternalIPs) != 0 ||
 			len(s.Spec.Ports) < 1 || len(s.Spec.Ports) > 2 {
 			return false

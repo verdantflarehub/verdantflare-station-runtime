@@ -127,3 +127,66 @@ func TestCleanWorkspacePodRemovesPodOnSuccess(t *testing.T) {
 		t.Fatalf("CleanWorkspacePod failed: %v", err)
 	}
 }
+
+func TestInferAppMetaAndWorkspaceNamespacesInUnifiedAppNamespace(t *testing.T) {
+	cases := []struct {
+		namespace   string
+		pool        string
+		appID       string
+		wantID      string
+		wantDisplay string
+	}{
+		{"verdantflare-app", "comfyui-nvme", "comfyui", "comfyui", "ComfyUI"},
+		{"verdantflare-app", "comfyui-nvme", "comfyui-workspace-001", "comfyui", "ComfyUI"},
+		{"verdantflare-app", "shared-pool", "comfyui-workspace-002", "comfyui", "ComfyUI"},
+		{"verdantflare-app", "blender-nvme", "blender", "blender", "Blender"},
+		{"verdantflare-app", "shared-pool", "blender-workspace-001", "blender", "Blender"},
+		{"verdantflare-comfyui", "nvme-pool", "slot-a", "comfyui", "ComfyUI"},
+		{"verdantflare-blender", "nvme-pool", "slot-a", "blender", "Blender"},
+	}
+	for _, tc := range cases {
+		gotID, gotDisplay := inferAppMeta(tc.namespace, tc.pool, tc.appID)
+		if gotID != tc.wantID || gotDisplay != tc.wantDisplay {
+			t.Fatalf("inferAppMeta(%q, %q, %q) = (%q, %q), want (%q, %q)", tc.namespace, tc.pool, tc.appID, gotID, gotDisplay, tc.wantID, tc.wantDisplay)
+		}
+	}
+
+	svc := &Service{
+		Namespaces: []string{"verdantflare-app", "verdantflare-comfyui"},
+		Profiles: map[string]HelperProfile{
+			"blender": {StorageProfile: StorageProfile{Namespace: "verdantflare-app"}},
+		},
+	}
+	gotNS := svc.workspaceNamespaces("verdantflare-blender", "verdantflare-app")
+	wantNS := []string{"verdantflare-app", "verdantflare-blender", "verdantflare-comfyui"}
+	if len(gotNS) != len(wantNS) {
+		t.Fatalf("workspaceNamespaces = %v, want %v", gotNS, wantNS)
+	}
+	for i := range wantNS {
+		if gotNS[i] != wantNS[i] {
+			t.Fatalf("workspaceNamespaces[%d] = %q, want %q", i, gotNS[i], wantNS[i])
+		}
+	}
+
+	ctx := context.Background()
+	client := fake.NewClientset()
+	seenPriorityClass := make(chan string, 1)
+	go func() {
+		for {
+			pods, err := client.CoreV1().Pods("verdantflare-app").List(ctx, metav1.ListOptions{})
+			if err == nil && len(pods.Items) > 0 {
+				p := pods.Items[0]
+				seenPriorityClass <- p.Spec.PriorityClassName
+				p.Status.Phase = corev1.PodSucceeded
+				_, _ = client.CoreV1().Pods("verdantflare-app").UpdateStatus(ctx, &p, metav1.UpdateOptions{})
+				return
+			}
+		}
+	}()
+	if err := CleanWorkspacePod(ctx, client, "verdantflare-app", "blender-workspace-001", "5090-node", "registry.example.test/worker:v0.1.0", 1000); err != nil {
+		t.Fatalf("CleanWorkspacePod in verdantflare-app failed: %v", err)
+	}
+	if got := <-seenPriorityClass; got != "station-app-worker" {
+		t.Fatalf("CleanWorkspacePod in verdantflare-app PriorityClassName = %q, want station-app-worker", got)
+	}
+}

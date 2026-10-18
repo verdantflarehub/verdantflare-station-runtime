@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,6 +25,66 @@ import (
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
 	"google.golang.org/grpc"
 )
+
+func selectCleanerTarget(profiles map[string]instances.HelperProfile, appProfiles map[string]appinstances.Profile, namespace, pvcName string) (string, int64, bool) {
+	for _, p := range profiles {
+		if p.Namespace == namespace && slices.Contains(p.Claims, pvcName) {
+			return p.Image, 1000, true
+		}
+	}
+	for _, p := range appProfiles {
+		if p.Namespace == namespace && slices.Contains(p.Claims, pvcName) {
+			return p.Image, p.RunAsUser, true
+		}
+	}
+	pvcLower := strings.ToLower(pvcName)
+	if strings.HasPrefix(pvcLower, "comfyui") {
+		for _, p := range appProfiles {
+			if p.Namespace == namespace {
+				return p.Image, p.RunAsUser, true
+			}
+		}
+	}
+	if strings.HasPrefix(pvcLower, "blender") {
+		for _, p := range profiles {
+			if p.Namespace == namespace {
+				return p.Image, 1000, true
+			}
+		}
+	}
+	for _, p := range profiles {
+		if p.Namespace == namespace {
+			return p.Image, 1000, true
+		}
+	}
+	for _, p := range appProfiles {
+		if p.Namespace == namespace {
+			return p.Image, p.RunAsUser, true
+		}
+	}
+	return "", 0, false
+}
+
+func mergeStateNamespaces(existing []string, rawEnv string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(ns string) {
+		ns = strings.TrimSpace(ns)
+		if ns == "" || seen[ns] {
+			return
+		}
+		seen[ns] = true
+		out = append(out, ns)
+	}
+	for _, ns := range existing {
+		add(ns)
+	}
+	for _, part := range strings.Split(rawEnv, ",") {
+		add(part)
+	}
+	slices.Sort(out)
+	return out
+}
 
 func run() int {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -67,6 +129,9 @@ func run() int {
 	}
 	var stateObserver *appstate.Observer
 	if stateConfig != nil {
+		if extraNS := os.Getenv("STATION_APP_STATE_NAMESPACES"); extraNS != "" {
+			stateConfig.Namespaces = mergeStateNamespaces(stateConfig.Namespaces, extraNS)
+		}
 		watchClient, e := appstate.NewKubernetes(os.Getenv("STATION_KUBECONFIG"), os.Getenv("STATION_KUBE_CONTEXT"))
 		if e != nil {
 			logger.Error("invalid_app_state_watch_configuration")
@@ -246,19 +311,23 @@ func run() int {
 			instanceAddr = "127.0.0.1:5054"
 		}
 		cleaner := func(ctx context.Context, namespace, pvcName, nodeName string) error {
-			for _, p := range profiles {
-				if p.Namespace == namespace {
-					return instances.CleanWorkspacePod(ctx, driver.Client, namespace, pvcName, nodeName, p.Image, 1000)
-				}
-			}
-			for _, p := range appProfiles {
-				if p.Namespace == namespace {
-					return instances.CleanWorkspacePod(ctx, driver.Client, namespace, pvcName, nodeName, p.Image, p.RunAsUser)
-				}
+			if image, runAsUser, ok := selectCleanerTarget(profiles, appProfiles, namespace, pvcName); ok {
+				return instances.CleanWorkspacePod(ctx, driver.Client, namespace, pvcName, nodeName, image, runAsUser)
 			}
 			return instances.ErrInvalid
 		}
-		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
+		var workspaceNamespaces []string
+		if stateConfig != nil {
+			workspaceNamespaces = append(workspaceNamespaces, stateConfig.Namespaces...)
+		}
+		for _, p := range profiles {
+			workspaceNamespaces = append(workspaceNamespaces, p.Namespace)
+		}
+		for _, p := range appProfiles {
+			workspaceNamespaces = append(workspaceNamespaces, p.Namespace)
+		}
+		workspaceNamespaces = append(workspaceNamespaces, "verdantflare-app")
+		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Namespaces: workspaceNamespaces, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
 		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- instanceServer.ListenAndServe() }()
 	}

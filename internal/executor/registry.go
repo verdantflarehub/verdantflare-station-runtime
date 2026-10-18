@@ -175,13 +175,22 @@ func LoadRegistry(root, path string) (map[string]Target, error) {
 				if d.Name != m.Deployment.Name {
 					continue
 				}
+				if d.Namespace == "" {
+					d.Namespace = e.Namespace
+				}
 				if head.APIVersion != "apps/v1" || d.Namespace != e.Namespace || t.Deployment != nil || len(d.Spec.Template.Spec.Containers) == 0 {
 					return nil, errors.New("deployment target mismatch")
 				}
 				t.Deployment = &d
 			case "Service":
 				var svc corev1.Service
-				if json.Unmarshal(raw, &svc) != nil || head.APIVersion != "v1" || svc.Namespace != e.Namespace {
+				if json.Unmarshal(raw, &svc) != nil {
+					return nil, errors.New("service target mismatch")
+				}
+				if svc.Namespace == "" {
+					svc.Namespace = e.Namespace
+				}
+				if head.APIVersion != "v1" || svc.Namespace != e.Namespace {
 					return nil, errors.New("service target mismatch")
 				}
 				t.Services = append(t.Services, &svc)

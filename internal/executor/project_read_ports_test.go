@@ -173,3 +173,44 @@ func TestProjectReadPortsDefaultProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectReadPortsUnifiedAppNamespaceAndMismatchRejection(t *testing.T) {
+	r, _, _, in := projectReadFixture(t)
+	source, target := unboundPortsTarget(r.Source), unboundPortsTarget(r.Target)
+	source.Deployment.Namespace, target.Deployment.Namespace = "verdantflare-app", "verdantflare-app"
+	source.Services = []*corev1.Service{source.Services[0].DeepCopy()}
+	target.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+	source.Services[0].Namespace, target.Services[0].Namespace = "verdantflare-app", "verdantflare-app"
+	if !projectReadPorts(source, target) {
+		t.Fatal("expected projectReadPorts to admit verdantflare-app")
+	}
+	if _, err := NewStoppedReplacement(r.Kubernetes, source, target, in); err != nil {
+		t.Fatalf("expected NewStoppedReplacement in verdantflare-app to succeed, got %v", err)
+	}
+
+	mismatchSvc := target
+	mismatchSvc.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+	mismatchSvc.Services[0].Namespace = "verdantflare-station"
+	if projectReadPorts(source, mismatchSvc) {
+		t.Fatal("expected projectReadPorts to reject mismatched service namespace")
+	}
+
+	mismatchDep := target
+	mismatchDep.Deployment = target.Deployment.DeepCopy()
+	mismatchDep.Deployment.Namespace = "verdantflare-station"
+	if projectReadPorts(source, mismatchDep) {
+		t.Fatal("expected projectReadPorts to reject mismatched deployment namespace")
+	}
+
+	defaultNS := source
+	defaultNS.Deployment = source.Deployment.DeepCopy()
+	defaultNS.Services = []*corev1.Service{source.Services[0].DeepCopy()}
+	defaultNS.Deployment.Namespace, defaultNS.Services[0].Namespace = "default", "default"
+	defaultTarget := target
+	defaultTarget.Deployment = target.Deployment.DeepCopy()
+	defaultTarget.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+	defaultTarget.Deployment.Namespace, defaultTarget.Services[0].Namespace = "default", "default"
+	if projectReadPorts(defaultNS, defaultTarget) {
+		t.Fatal("expected projectReadPorts to reject default namespace")
+	}
+}

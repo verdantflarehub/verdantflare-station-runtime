@@ -11,6 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -134,7 +136,8 @@ func (j *Journal) Accept(ctx context.Context, in Run, p Profile) (StartRecord, e
 	var previousGeneration int64
 	var previousPhase string
 	var previousObservation []byte
-	e = tx.QueryRow(ctx, `SELECT generation,phase,observation FROM station.app_instance_starts WHERE instance_id=$1 ORDER BY generation DESC LIMIT 1`, in.InstanceID).Scan(&previousGeneration, &previousPhase, &previousObservation)
+	var previousProfileHash string
+	e = tx.QueryRow(ctx, `SELECT generation,phase,observation,profile_hash FROM station.app_instance_starts WHERE instance_id=$1 ORDER BY generation DESC LIMIT 1`, in.InstanceID).Scan(&previousGeneration, &previousPhase, &previousObservation, &previousProfileHash)
 	initial := Observation{}
 	if errors.Is(e, pgx.ErrNoRows) {
 		if in.Generation != 1 {
@@ -150,8 +153,17 @@ func (j *Journal) Accept(ctx context.Context, in Run, p Profile) (StartRecord, e
 		if strictjson.Decode(bytes.NewReader(previousObservation), 4096, &prior) != nil || !prior.valid() || prior.SecretUID == "" {
 			return StartRecord{}, ErrBinding
 		}
-		// Credentials belong to the instance, while Pod and Service belong to a run.
-		initial.SecretUID = prior.SecretUID
+		if previousProfileHash == p.Hash() {
+			// Credentials belong to the instance, while Pod and Service belong to a run.
+			initial.SecretUID = prior.SecretUID
+		} else {
+			secret, sErr := j.Client.CoreV1().Secrets(p.Namespace).Get(ctx, instanceName(in.Identity), metav1.GetOptions{})
+			if sErr == nil && secretMatches(secret, in.Identity, p, "") {
+				initial.SecretUID = string(secret.UID)
+			} else if sErr != nil && !apierrors.IsNotFound(sErr) {
+				return StartRecord{}, sErr
+			}
+		}
 	}
 	b, e := j.reserve(ctx, tx, in, p)
 	if e != nil {
@@ -177,10 +189,27 @@ func (j *Journal) reserve(ctx context.Context, tx pgx.Tx, in Run, p Profile) (Vo
 	e := tx.QueryRow(ctx, `SELECT binding FROM station.app_instance_workspaces WHERE instance_id=$1`, in.InstanceID).Scan(&raw)
 	if e == nil {
 		var b Volume
-		if strictjson.Decode(bytes.NewReader(raw), 4096, &b) != nil || !validVolume(in.Identity, p, b) {
+		if strictjson.Decode(bytes.NewReader(raw), 4096, &b) != nil {
 			return Volume{}, ErrBinding
 		}
-		return b, nil
+		if validVolume(in.Identity, p, b) {
+			return b, nil
+		}
+		if b.Identity == in.Identity && validUID(b.PVUID) && b.PVName != "" {
+			pvc, pErr := j.Client.CoreV1().PersistentVolumeClaims(p.Namespace).Get(ctx, b.PVCName, metav1.GetOptions{})
+			if pErr == nil && validUID(string(pvc.UID)) {
+				candidate := Volume{Identity: in.Identity, ProfileHash: p.Hash(), PVCName: b.PVCName, PVCUID: string(pvc.UID), PVName: b.PVName, PVUID: b.PVUID}
+				if inspected, iErr := InspectVolume(ctx, j.Client, in.Identity, p, b.PVCName, &candidate, nil); iErr == nil {
+					updatedRaw, _ := json.Marshal(inspected)
+					if _, uErr := tx.Exec(ctx, `UPDATE station.app_instance_workspaces SET profile_hash=$2,namespace=$3,pvc_name=$4,pvc_uid=$5,binding=$6 WHERE instance_id=$1`,
+						in.InstanceID, p.Hash(), p.Namespace, inspected.PVCName, inspected.PVCUID, updatedRaw); uErr != nil {
+						return Volume{}, uErr
+					}
+					return inspected, nil
+				}
+			}
+		}
+		return Volume{}, ErrBinding
 	}
 	if !errors.Is(e, pgx.ErrNoRows) {
 		return Volume{}, e

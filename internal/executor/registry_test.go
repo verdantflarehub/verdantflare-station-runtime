@@ -154,3 +154,50 @@ func TestRegistryContentHealthEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryDefaultsEmptyTemplateNamespaceToEntryNamespace(t *testing.T) {
+	root := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if e := os.WriteFile(filepath.Join(root, name), []byte(body), 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+	write("registry.json", `[{"manifest_file":"manifest.yaml","namespace":"verdantflare-app"}]`)
+	write("manifest.yaml", `app_id: test-app
+version: 1.0.0
+required_models: []
+required_resources: {gpu: 0, disk_bytes: 0}
+deployment:
+  template_ref: workload.yaml
+  workload_name: test-app
+  images: [{component: server, image: "example.invalid/server:1.0.0"}]
+`)
+	write("workload.yaml", `apiVersion: apps/v1
+kind: Deployment
+metadata: {name: test-app}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: test}}
+  template:
+    metadata: {labels: {app: test}}
+    spec:
+      containers:
+        - {name: server, image: "example.invalid/server:1.0.0"}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: test-app}
+spec:
+  selector: {app: test}
+  ports: [{name: http, port: 8000, targetPort: 8000}]
+`)
+	targets, err := LoadRegistry(root, filepath.Join(root, "registry.json"))
+	if err != nil {
+		t.Fatalf("expected template with omitted namespace to inherit entry namespace, got %v", err)
+	}
+	target := targets["test-app@1.0.0"]
+	if target.Deployment.Namespace != "verdantflare-app" || len(target.Services) != 1 || target.Services[0].Namespace != "verdantflare-app" {
+		t.Fatalf("expected Deployment and Service namespace defaulted to verdantflare-app, got dep=%q svc=%+v", target.Deployment.Namespace, target.Services)
+	}
+}

@@ -92,6 +92,7 @@ type Service struct {
 	Pool             *pgxpool.Pool
 	Client           kubernetes.Interface
 	StationID        string
+	Namespaces       []string
 	Profiles         map[string]HelperProfile
 	Observer         PreparationObserver
 	WorkerObserver   WorkerObserver

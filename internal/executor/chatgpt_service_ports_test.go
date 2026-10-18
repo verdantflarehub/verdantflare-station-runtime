@@ -162,3 +162,35 @@ func TestChatGPTExecutionPortsDefaultProtocol(t *testing.T) {
 		})
 	}
 }
+
+func TestChatGPTExecutionPortsUnifiedAppNamespaceAndMismatchRejection(t *testing.T) {
+	r, _, _, in := chatgptPortsFixture(t)
+	source, target := unboundPortsTarget(r.Source), unboundPortsTarget(r.Target)
+	source.Deployment.Namespace, target.Deployment.Namespace = "verdantflare-app", "verdantflare-app"
+	source.Services = []*corev1.Service{source.Services[0].DeepCopy()}
+	target.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+	source.Services[0].Namespace, target.Services[0].Namespace = "verdantflare-app", "verdantflare-app"
+	if !chatgptExecutionPorts(source, target) {
+		t.Fatal("expected chatgptExecutionPorts to admit verdantflare-app")
+	}
+	if _, err := NewStoppedReplacement(r.Kubernetes, source, target, in); err != nil {
+		t.Fatalf("expected NewStoppedReplacement in verdantflare-app to succeed, got %v", err)
+	}
+
+	mismatchSvc := target
+	mismatchSvc.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+	mismatchSvc.Services[0].Namespace = "verdantflare-chatgpt"
+	if chatgptExecutionPorts(source, mismatchSvc) {
+		t.Fatal("expected chatgptExecutionPorts to reject mismatched service namespace")
+	}
+
+	defaultNS := source
+	defaultNS.Services = []*corev1.Service{source.Services[0].DeepCopy()}
+	defaultNS.Services[0].Namespace = "default"
+	defaultTarget := target
+	defaultTarget.Services = []*corev1.Service{target.Services[0].DeepCopy()}
+	defaultTarget.Services[0].Namespace = "default"
+	if chatgptExecutionPorts(defaultNS, defaultTarget) {
+		t.Fatal("expected chatgptExecutionPorts to reject default namespace")
+	}
+}

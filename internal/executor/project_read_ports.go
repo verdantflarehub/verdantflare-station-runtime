@@ -23,7 +23,7 @@ func projectReadPorts(source, target Target) bool {
 				s.Spec.Ports[i].Protocol = corev1.ProtocolTCP
 			}
 		}
-		if s.Name != "app-project" || s.Namespace != "verdantflare-station" || s.Spec.Type != corev1.ServiceTypeClusterIP || s.Spec.ExternalName != "" || len(s.Spec.ExternalIPs) != 0 || (len(s.Spec.Ports) != 2 && len(s.Spec.Ports) != 3) {
+		if s.Name != "app-project" || !validName(s.Namespace) || s.Namespace == "default" || s.Namespace != a.Namespace || s.Spec.Type != corev1.ServiceTypeClusterIP || s.Spec.ExternalName != "" || len(s.Spec.ExternalIPs) != 0 || (len(s.Spec.Ports) != 2 && len(s.Spec.Ports) != 3) {
 			return false
 		}
 		want := []corev1.ServicePort{{Name: "business", Port: 8443, TargetPort: intstr.FromString("business"), Protocol: corev1.ProtocolTCP}, {Name: "mcp", Port: 8444, TargetPort: intstr.FromString("mcp"), Protocol: corev1.ProtocolTCP}}
@@ -44,7 +44,7 @@ func projectReadPorts(source, target Target) bool {
 	}
 	for _, t := range []Target{source, target} {
 		d := t.Deployment
-		if d == nil || d.Name != "app-project" || d.Namespace != "verdantflare-station" || len(d.Spec.Template.Spec.Containers) != 1 || len(d.Spec.Template.Spec.InitContainers) != 0 {
+		if d == nil || d.Name != "app-project" || d.Namespace != a.Namespace || len(d.Spec.Template.Spec.Containers) != 1 || len(d.Spec.Template.Spec.InitContainers) != 0 {
 			return false
 		}
 		c := d.Spec.Template.Spec.Containers[0]

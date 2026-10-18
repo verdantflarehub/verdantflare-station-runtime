@@ -85,26 +85,34 @@ type appWorkspaceRow struct {
 	LastPhase      string
 }
 
-func inferAppMeta(namespace, pool, appID string) (string, string) {
-	id := strings.ToLower(strings.TrimSpace(appID))
-	if id == "" {
-		switch {
-		case namespace == "verdantflare-comfyui" || strings.HasPrefix(pool, "comfyui"):
-			id = "comfyui"
-		case namespace == "verdantflare-blender" || strings.HasPrefix(pool, "blender"):
-			id = "blender"
-		default:
-			id = strings.TrimPrefix(namespace, "verdantflare-")
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
 		}
 	}
-	switch id {
-	case "comfyui":
+	return ""
+}
+
+func inferAppMeta(namespace, pool, appID string) (string, string) {
+	id := strings.ToLower(strings.TrimSpace(appID))
+	poolLower := strings.ToLower(strings.TrimSpace(pool))
+	switch {
+	case id == "comfyui" || strings.HasPrefix(id, "comfyui") || strings.HasPrefix(poolLower, "comfyui"):
 		return "comfyui", "ComfyUI"
-	case "blender":
+	case id == "blender" || strings.HasPrefix(id, "blender") || strings.HasPrefix(poolLower, "blender"):
 		return "blender", "Blender"
-	default:
+	case namespace == "verdantflare-comfyui":
+		return "comfyui", "ComfyUI"
+	case namespace == "verdantflare-blender":
+		return "blender", "Blender"
+	case namespace == "verdantflare-app" && id != "":
 		return id, id
 	}
+	if id == "" {
+		id = strings.TrimPrefix(namespace, "verdantflare-")
+	}
+	return id, id
 }
 
 func (s *Service) workspaceNamespaces(extra ...string) []string {
@@ -118,12 +126,16 @@ func (s *Service) workspaceNamespaces(extra ...string) []string {
 		seen[ns] = true
 		out = append(out, ns)
 	}
+	for _, ns := range s.Namespaces {
+		add(ns)
+	}
 	for _, p := range s.Profiles {
 		add(p.Namespace)
 	}
 	for _, ns := range extra {
 		add(ns)
 	}
+	add("verdantflare-app")
 	add("verdantflare-blender")
 	add("verdantflare-comfyui")
 	sort.Strings(out)
@@ -248,7 +260,7 @@ func (s *Service) Workspaces(ctx context.Context) ([]WorkspaceVolume, error) {
 			if nodeName == "" {
 				nodeName = "verdentflare-5090"
 			}
-			appID, appDisplay := inferAppMeta(ns, pool, pvc.Annotations["station.verdantflare.com/app-id"])
+			appID, appDisplay := inferAppMeta(ns, pool, firstNonEmpty(pvc.Annotations["station.verdantflare.com/app-id"], pvc.Labels["station.verdantflare.com/app-id"], pvc.Labels["app.kubernetes.io/name"], pvc.Name))
 
 			item := WorkspaceVolume{
 				WorkspaceID:    key,
@@ -494,7 +506,7 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 		}
 	}
 
-	appID, appDisplay := inferAppMeta(in.Namespace, pool, "")
+	appID, appDisplay := inferAppMeta(in.Namespace, pool, firstNonEmpty(pvc.Annotations["station.verdantflare.com/app-id"], pvc.Labels["station.verdantflare.com/app-id"], pvc.Labels["app.kubernetes.io/name"], pvc.Name))
 	return WorkspaceVolume{
 		WorkspaceID:    in.Namespace + "/" + in.PVCName,
 		PVCName:        in.PVCName,
@@ -826,7 +838,7 @@ func CleanWorkspacePod(ctx context.Context, client kubernetes.Interface, namespa
 	if nodeName != "" {
 		pod.Spec.NodeSelector = map[string]string{corev1.LabelHostname: nodeName}
 	}
-	if namespace == "verdantflare-comfyui" {
+	if namespace == "verdantflare-comfyui" || namespace == "verdantflare-app" || strings.HasPrefix(strings.ToLower(pvcName), "comfyui") {
 		prio := int32(0)
 		preempt := corev1.PreemptNever
 		pod.Spec.PriorityClassName = "station-app-worker"
