@@ -114,7 +114,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	if action != "adopt" && t.DiskBytes > 0 {
 		return failed("SERVICE_UNAVAILABLE", "Storage capacity preflight is not connected"), nil
 	}
-	if action != "adopt" && (len(t.Models) > 0 || t.GPU > 0) {
+	if action != "adopt" && (len(t.Models) > 0 || (!t.AppCenter && t.GPU > 0)) {
 		return failed("SERVICE_UNAVAILABLE", "Model preparation and GPU readiness adapters are not connected"), nil
 	}
 	deployments := k.Client.AppsV1().Deployments(t.Deployment.Namespace)

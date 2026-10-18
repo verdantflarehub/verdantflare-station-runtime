@@ -48,7 +48,7 @@ func TestAppCenterInspectionReadOnlyInstall(t *testing.T) {
 			}
 			svc := &Service{StationID: request.Command.StationId, Targets: map[string]Target{app.AppID + "@" + app.Version: app}, Driver: &Kubernetes{Client: client}}
 			out, err := svc.InspectBound(context.Background(), in)
-			if variant == "absent" {
+			if variant == "absent" || variant == "gpu" {
 				if err != nil || out.State != "absent" || out.WorkloadUid != "" || out.TemplateDigest != in.TemplateDigest {
 					t.Fatal(out, err)
 				}

@@ -48,7 +48,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 	t, exists := s.Targets[in.AppId+"@"+in.AppVersion]
 	if !exists || t.Deployment == nil || t.AppID != in.AppId || t.Version != in.AppVersion ||
 		in.TemplateDigest != "sha256:"+hex.EncodeToString(t.Hash[:]) || !validInstallationBindings(t) ||
-		t.DiskBytes > 0 || t.GPU > 0 || len(t.Models) > 0 {
+		t.DiskBytes > 0 || len(t.Models) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "Protected execution template or preparation support unavailable")
 	}
 	if in.Action == "start" || in.Action == "stop" || in.Action == "restart" || in.Action == "delete" {
