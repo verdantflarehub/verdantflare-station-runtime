@@ -241,7 +241,7 @@ func run() int {
 				return errors.New("App instance migrations not ready")
 			}
 		}
-		if maintenance != nil {
+		if maintenance != nil || transitionToken != "" {
 			if e = pool.QueryRow(c, `SELECT EXISTS(SELECT 1 FROM station.schema_migrations WHERE version=20 AND name='0020_runtime_preflight_rejection.sql')`).Scan(&table); e != nil || !table {
 				return errors.New("transition migrations not ready")
 			}
@@ -274,7 +274,7 @@ func run() int {
 		probeAddr = "127.0.0.1:5053"
 	}
 	mux := http.NewServeMux()
-	if maintenance != nil {
+	if maintenance != nil || transitionToken != "" {
 		journal := &executor.ManagementJournal{Pool: pool, StationID: station, Targets: targets, Kubernetes: driver, Maintenance: maintenance}
 		mux.Handle(executor.ManagementReconcilePath, executor.ManagementHandler{Journal: journal, Token: transitionToken})
 	}
