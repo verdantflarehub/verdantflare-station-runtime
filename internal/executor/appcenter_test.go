@@ -72,14 +72,14 @@ func TestAppCenterGuardValidationAndHash(t *testing.T) {
 			t.Fatal("invalid guard accepted")
 		}
 	}
-	for _, action := range []string{"adopt", "upgrade", "rollback"} {
+	for _, action := range []string{"adopt", "rollback"} {
 		v := proto.Clone(r).(*pb.AppCenterRequest)
 		v.Command.Action = action
 		if status.Code(validateAppCenterRequest(v)) != codes.FailedPrecondition {
 			t.Fatal("unsupported guard action accepted", action)
 		}
 	}
-	for _, action := range []string{"stop", "restart", "delete"} {
+	for _, action := range []string{"stop", "restart", "delete", "upgrade"} {
 		v := proto.Clone(r).(*pb.AppCenterRequest)
 		v.Command.Action = action
 		if status.Code(validateAppCenterRequest(v)) != codes.InvalidArgument {

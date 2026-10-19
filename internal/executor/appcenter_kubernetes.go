@@ -41,13 +41,18 @@ func serviceCompatible(t Target, wanted, live *corev1.Service) bool {
 }
 
 func appCenterWorkloadMatches(t Target, live *appsv1.Deployment, action, operation, station, org string) bool {
-	if (live.DeletionTimestamp != nil && action != "delete") || !ownedWorkload(live.Annotations, t, station, org) || !workloadCompatible(t, live) {
+	compatible := workloadCompatible(t, live)
+	if !compatible && t.OCIChart != nil && action == "upgrade" {
+		compatible = live != nil && t.Deployment != nil && live.Namespace == t.Deployment.Namespace && live.Name == t.Deployment.Name &&
+			len(live.Spec.Template.Spec.Containers) == len(t.Deployment.Spec.Template.Spec.Containers)
+	}
+	if (live.DeletionTimestamp != nil && action != "delete") || !ownedWorkload(live.Annotations, t, station, org) || !compatible {
 		return false
 	}
 	if action == "install" {
 		return live.Annotations[appCenterOperationKey] == operation
 	}
-	return (action == "start" || action == "stop" || action == "restart" || action == "delete") && string(live.UID) == t.ExpectedUID
+	return (action == "start" || action == "stop" || action == "restart" || action == "delete" || action == "upgrade") && string(live.UID) == t.ExpectedUID
 }
 
 func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, operation, station, org string) bool {
@@ -58,8 +63,8 @@ func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, ope
 func (k *Kubernetes) CheckAppCenter(ctx context.Context, t Target, action, operation, station, org string, first bool) error {
 	conflict := status.Error(codes.FailedPrecondition, "Protected workload identity or ownership changed")
 	if !t.AppCenter || (t.InstallationID == "" && !(first && action == "install")) || t.Deployment == nil ||
-		(action != "install" && action != "start" && action != "stop" && action != "restart" && action != "delete") ||
-		((action == "start" || action == "stop" || action == "restart" || action == "delete") && t.ExpectedUID == "") {
+		(action != "install" && action != "upgrade" && action != "start" && action != "stop" && action != "restart" && action != "delete") ||
+		((action == "upgrade" || action == "start" || action == "stop" || action == "restart" || action == "delete") && t.ExpectedUID == "") {
 		return conflict
 	}
 	live, err := k.Client.AppsV1().Deployments(t.Deployment.Namespace).Get(ctx, t.Deployment.Name, metav1.GetOptions{})

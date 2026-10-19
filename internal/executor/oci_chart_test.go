@@ -120,9 +120,27 @@ func TestOCIChartSourceResolveAndHelmSecretLifecycle(t *testing.T) {
 
 	k8sClient := fake.NewSimpleClientset()
 	recordHelmReleaseSecret(context.Background(), k8sClient, "verdantflare-app", resolved)
+	// Idempotent call with same packageDigest must not create v2
+	recordHelmReleaseSecret(context.Background(), k8sClient, "verdantflare-app", resolved)
 	secs, err := k8sClient.CoreV1().Secrets("verdantflare-app").List(context.Background(), metav1.ListOptions{LabelSelector: "owner=helm,name=comfyui"})
-	if err != nil || len(secs.Items) != 1 || secs.Items[0].Name != "sh.helm.release.v1.comfyui.v1" {
-		t.Fatalf("expected helm release secret v1, got %v (err=%v)", secs, err)
+	if err != nil || len(secs.Items) != 1 || secs.Items[0].Name != "sh.helm.release.v1.comfyui.v1" || secs.Items[0].Labels["status"] != "deployed" {
+		t.Fatalf("expected helm release secret v1 deployed, got %v (err=%v)", secs, err)
+	}
+
+	resolvedV2 := cloneTarget(resolved)
+	resolvedV2.Version = "0.1.16"
+	resolvedV2.OCIChart = &OCIChartMeta{
+		OCIRef:         resolved.OCIChart.OCIRef,
+		ChartName:      "comfyui",
+		ChartVersion:   "0.1.1",
+		AppVersion:     "0.1.16",
+		ManifestDigest: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x11}, 32)),
+		PackageDigest:  "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x22}, 32)),
+	}
+	recordHelmReleaseSecret(context.Background(), k8sClient, "verdantflare-app", resolvedV2)
+	secs, err = k8sClient.CoreV1().Secrets("verdantflare-app").List(context.Background(), metav1.ListOptions{LabelSelector: "owner=helm,name=comfyui"})
+	if err != nil || len(secs.Items) != 2 {
+		t.Fatalf("expected 2 helm release secrets (v1 superseded, v2 deployed), got %d (err=%v)", len(secs.Items), err)
 	}
 
 	deleteHelmReleaseSecrets(context.Background(), k8sClient, "verdantflare-app", "comfyui")

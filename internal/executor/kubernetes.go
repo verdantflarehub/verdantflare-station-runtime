@@ -167,7 +167,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
 	}
 	if t.InstallationID != "" && (!ownedWorkload(live.Annotations, t, station, org) ||
-		!workloadCompatible(t, live)) {
+		(!workloadCompatible(t, live) && !(t.OCIChart != nil && action == "upgrade"))) {
 		return failed("CONFLICT", "Workload differs from the bound installation"), nil
 	}
 	if t.Preinstalled && (action != "install" || live.Annotations[preinstalledOperationKey] != operation || !owned(live.Annotations, t, station, org)) {
@@ -188,6 +188,51 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	}
 	if live.DeletionTimestamp != nil {
 		return failed("CONFLICT", "Workload is being deleted"), nil
+	}
+	if action == "upgrade" {
+		if t.OCIChart == nil {
+			return failed("CONFLICT", "Upgrade requires an OCI chart target"), nil
+		}
+		if err = k.dependencies(ctx, t); err != nil {
+			return failed("SERVICE_UNAVAILABLE", err.Error()), nil
+		}
+		desired := int32(1)
+		if t.Deployment.Spec.Replicas != nil && *t.Deployment.Spec.Replicas > 0 {
+			desired = *t.Deployment.Spec.Replicas
+		}
+		expectedHash := hex.EncodeToString(t.Hash[:])
+		needsImageUpdate := !sameImages(live, t.Deployment)
+		needsHashUpdate := live.Annotations[hashKey] != expectedHash
+		needsScale := live.Spec.Replicas == nil || *live.Spec.Replicas == 0
+		if needsImageUpdate || needsHashUpdate || needsScale {
+			images := map[string]string{}
+			for _, c := range t.Deployment.Spec.Template.Spec.Containers {
+				images[c.Name] = c.Image
+			}
+			for i := range live.Spec.Template.Spec.Containers {
+				c := &live.Spec.Template.Spec.Containers[i]
+				if img, ok := images[c.Name]; ok && img != "" {
+					c.Image = img
+				}
+			}
+			mark(&live.ObjectMeta, t, station, org)
+			if needsScale {
+				live.Spec.Replicas = &desired
+			}
+			if _, err = deployments.Update(ctx, live, metav1.UpdateOptions{}); err != nil {
+				return Result{}, err
+			}
+			for _, wanted := range t.Services {
+				services := k.Client.CoreV1().Services(wanted.Namespace)
+				if existing, sErr := services.Get(ctx, wanted.Name, metav1.GetOptions{}); sErr == nil && existing != nil && ownedWorkload(existing.Annotations, t, station, org) {
+					svcCopy := existing.DeepCopy()
+					mark(&svcCopy.ObjectMeta, t, station, org)
+					_, _ = services.Update(ctx, svcCopy, metav1.UpdateOptions{})
+				}
+			}
+			recordHelmReleaseSecret(ctx, k.Client, t.Deployment.Namespace, t)
+			return Result{"running", "installing", "", ""}, nil
+		}
 	}
 	if !sameImages(live, t.Deployment) {
 		return failed("CONFLICT", "Workload images differ from the registered version"), nil

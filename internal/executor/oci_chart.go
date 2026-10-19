@@ -361,6 +361,9 @@ func recordHelmReleaseSecret(ctx context.Context, client kubernetes.Interface, n
 	if err == nil && list != nil {
 		for i := range list.Items {
 			sec := &list.Items[i]
+			if sec.Labels["status"] == "deployed" && sec.Annotations != nil && sec.Annotations["station.verdantflare.com/package-digest"] == t.OCIChart.PackageDigest {
+				return
+			}
 			v, _ := strconv.Atoi(sec.Labels["version"])
 			if v > maxVer {
 				maxVer = v
@@ -373,6 +376,10 @@ func recordHelmReleaseSecret(ctx context.Context, client kubernetes.Interface, n
 		}
 	}
 	nextVer := maxVer + 1
+	desc := "Install complete"
+	if maxVer > 0 {
+		desc = "Upgrade complete"
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	releaseObj := map[string]any{
 		"name":      t.AppID,
@@ -382,7 +389,7 @@ func recordHelmReleaseSecret(ctx context.Context, client kubernetes.Interface, n
 			"first_deployed": now,
 			"last_deployed":  now,
 			"deleted":        "",
-			"description":    "Install complete",
+			"description":    desc,
 			"status":         "deployed",
 		},
 		"chart": map[string]any{
@@ -413,6 +420,9 @@ func recordHelmReleaseSecret(ctx context.Context, client kubernetes.Interface, n
 				"status":     "deployed",
 				"version":    strconv.Itoa(nextVer),
 				"modifiedAt": strconv.FormatInt(time.Now().Unix(), 10),
+			},
+			Annotations: map[string]string{
+				"station.verdantflare.com/package-digest": t.OCIChart.PackageDigest,
 			},
 		},
 		Type: corev1.SecretType("helm.sh/release.v1"),

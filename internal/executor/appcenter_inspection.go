@@ -37,7 +37,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		if in.InstallationId != "" {
 			return nil, invalid
 		}
-	case "start", "stop", "restart", "delete":
+	case "start", "stop", "restart", "delete", "upgrade":
 		id, err := uuid.Parse(in.InstallationId)
 		if err != nil || id.Version() != 7 || id.String() != in.InstallationId {
 			return nil, invalid
@@ -56,7 +56,7 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		t.DiskBytes > 0 || len(t.Models) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "Protected execution template or preparation support unavailable")
 	}
-	if in.Action == "start" || in.Action == "stop" || in.Action == "restart" || in.Action == "delete" {
+	if in.Action == "start" || in.Action == "stop" || in.Action == "restart" || in.Action == "delete" || in.Action == "upgrade" {
 		var err error
 		t, err = bindInstallation(t, &pb.AppRequest{InstallationId: in.InstallationId, StationId: in.StationId, OrganizationId: in.OrganizationId, AppId: in.AppId, AppVersion: in.AppVersion})
 		if err != nil {
@@ -107,7 +107,7 @@ func (k *Kubernetes) InspectAppCenter(ctx context.Context, t Target, action, sta
 				return nil, status.Error(codes.FailedPrecondition, "Stop requires an observed running workload")
 			}
 			out.State = "running"
-		case "restart", "delete":
+		case "restart", "delete", "upgrade":
 			if !isRunning && !isStopped {
 				return nil, status.Error(codes.FailedPrecondition, "Action requires an observed running or stopped workload")
 			}
@@ -124,7 +124,7 @@ func (k *Kubernetes) InspectAppCenter(ctx context.Context, t Target, action, sta
 	if err := k.CheckAppCenter(ctx, t, action, "", station, org, true); err != nil {
 		return nil, err
 	}
-	if action == "install" {
+	if action == "install" || action == "upgrade" {
 		if err := k.dependencies(ctx, t); err != nil {
 			return nil, status.Error(codes.FailedPrecondition, "Required workload dependencies are unavailable")
 		}

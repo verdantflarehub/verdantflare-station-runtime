@@ -44,7 +44,7 @@ func (s *Service) reconcile(ctx context.Context, in *pb.AppRequest, guard *pb.Ap
 	if in.StationId != s.StationID {
 		return nil, status.Error(codes.PermissionDenied, "Station mismatch")
 	}
-	if in.RequestId == "" || len(in.RequestId) > 128 || !validName(in.AppId) || !versionPattern.MatchString(in.AppVersion) || !slices.Contains([]string{"install", "start", "stop", "restart", "delete", "adopt"}, in.Action) {
+	if in.RequestId == "" || len(in.RequestId) > 128 || !validName(in.AppId) || !versionPattern.MatchString(in.AppVersion) || !slices.Contains([]string{"install", "upgrade", "start", "stop", "restart", "delete", "adopt"}, in.Action) {
 		return nil, status.Error(codes.InvalidArgument, "Invalid application command")
 	}
 	if in.Action == "adopt" {
