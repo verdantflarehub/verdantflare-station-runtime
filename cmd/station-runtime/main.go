@@ -26,6 +26,28 @@ import (
 	"google.golang.org/grpc"
 )
 
+// Dashboard-only transitions have no HTTP maintenance registry.
+// Their control credential must still remain separate from instance callers.
+func transitionCredentialsDistinct(control, instance string, maintenance *executor.HTTPManagementMaintenance, callers appinstances.AccessRegistry) bool {
+	credentials := []string{}
+	if control != "" {
+		credentials = append(credentials, control)
+	}
+	if maintenance != nil {
+		for _, release := range maintenance.Releases {
+			if release.Token != "" {
+				credentials = append(credentials, release.Token)
+			}
+		}
+	}
+	for _, credential := range credentials {
+		if _, reused := callers[sha256.Sum256([]byte("Bearer "+credential))]; reused || credential == instance {
+			return false
+		}
+	}
+	return true
+}
+
 func selectCleanerTarget(profiles map[string]instances.HelperProfile, appProfiles map[string]appinstances.Profile, namespace, pvcName string) (string, int64, bool) {
 	for _, p := range profiles {
 		if p.Namespace == namespace && slices.Contains(p.Claims, pvcName) {
@@ -198,20 +220,9 @@ func run() int {
 			return 1
 		}
 	}
-	if maintenance != nil || transitionToken != "" {
-		credentials := []string{transitionToken}
-		for _, release := range maintenance.Releases {
-			if release.Token != "" { // Legacy exec authenticates through Kubernetes, not an App token.
-				credentials = append(credentials, release.Token)
-			}
-		}
-		for _, credential := range credentials {
-			_, reused := appCallers[sha256.Sum256([]byte("Bearer "+credential))]
-			if reused || credential == os.Getenv("STATION_INSTANCE_CONTROL_TOKEN") {
-				logger.Error("transition_credential_reused")
-				return 1
-			}
-		}
+	if !transitionCredentialsDistinct(transitionToken, os.Getenv("STATION_INSTANCE_CONTROL_TOKEN"), maintenance, appCallers) {
+		logger.Error("transition_credential_reused")
+		return 1
 	}
 	ready := func(c context.Context) error {
 		var id string
