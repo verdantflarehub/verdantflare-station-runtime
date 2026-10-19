@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"slices"
 	"time"
@@ -21,6 +22,7 @@ type Service struct {
 	Pool      *pgxpool.Pool
 	StationID string
 	Targets   map[string]Target
+	Charts    *OCIChartSource
 	Driver    Driver
 	Timeout   time.Duration
 	Releases  *releasebinding.Source
@@ -53,6 +55,11 @@ func (s *Service) reconcile(ctx context.Context, in *pb.AppRequest, guard *pb.Ap
 		return nil, status.Error(codes.InvalidArgument, "Unexpected workload UID")
 	}
 	target, targetExists := s.Targets[in.AppId+"@"+in.AppVersion]
+	if guard != nil && s.Charts != nil && (!targetExists || "sha256:"+hex.EncodeToString(target.Hash[:]) != guard.TemplateDigest) {
+		if ociTarget, ok := s.Charts.Resolve(ctx, s.Targets, in.AppId, in.AppVersion, guard.ReleaseDigest, guard.TemplateDigest); ok {
+			target, targetExists = ociTarget, true
+		}
+	}
 	hash := operationHash(in, len(target.InstallationBindings) > 0 || (in.PreinstalledRelease != nil && in.InstallationId != ""))
 	if guard != nil {
 		hash = appCenterOperationHash(&pb.AppCenterRequest{Command: in, Guard: guard})

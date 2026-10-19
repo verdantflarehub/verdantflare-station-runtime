@@ -35,6 +35,7 @@ type Target struct {
 	GPU                  int
 	DiskBytes            int64
 	Hash                 [32]byte
+	OCIChart             *OCIChartMeta
 }
 type registryEntry struct {
 	RetainedFalService   *corev1.Service       `json:"retained_fal_service,omitempty"`

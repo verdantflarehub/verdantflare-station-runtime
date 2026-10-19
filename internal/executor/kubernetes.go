@@ -94,6 +94,16 @@ func mark(meta *metav1.ObjectMeta, t Target, station, org string) {
 	for k, v := range annotations(t, station, org) {
 		meta.Annotations[k] = v
 	}
+	if t.OCIChart != nil {
+		if meta.Labels == nil {
+			meta.Labels = map[string]string{}
+		}
+		meta.Labels["app.kubernetes.io/managed-by"] = "Helm"
+		meta.Annotations["meta.helm.sh/release-name"] = t.AppID
+		if meta.Namespace != "" {
+			meta.Annotations["meta.helm.sh/release-namespace"] = meta.Namespace
+		}
+	}
 }
 func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, station, org string) (Result, error) {
 	if t.AppCenter {
@@ -142,6 +152,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		if err != nil {
 			return Result{}, err
 		}
+		if t.OCIChart != nil {
+			recordHelmReleaseSecret(ctx, k.Client, t.Deployment.Namespace, t)
+		}
 		return Result{"running", "installing", "", ""}, nil
 	}
 	if err != nil {
@@ -153,8 +166,8 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	if t.AppCenter && !appCenterWorkloadMatches(t, live, action, operation, station, org) {
 		return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
 	}
-	if t.InstallationID != "" && (!owned(live.Annotations, t, station, org) ||
-		!preinstalledDeploymentCompatible(t.Deployment, live)) {
+	if t.InstallationID != "" && (!ownedWorkload(live.Annotations, t, station, org) ||
+		!workloadCompatible(t, live)) {
 		return failed("CONFLICT", "Workload differs from the bound installation"), nil
 	}
 	if t.Preinstalled && (action != "install" || live.Annotations[preinstalledOperationKey] != operation || !owned(live.Annotations, t, station, org)) {
@@ -163,7 +176,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	if t.Preinstalled && !preinstalledDeploymentCompatible(t.Deployment, live) {
 		return failed("CONFLICT", "Preinstalled workload differs from the signed template"), nil
 	}
-	if !owned(live.Annotations, t, station, org) {
+	if !ownedWorkload(live.Annotations, t, station, org) {
 		// Registration is an internal step of the requested lifecycle operation.
 		// Observe again before starting: never update a stale resourceVersion.
 		t.ExpectedUID = string(live.UID)
@@ -256,7 +269,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			if apierrors.IsAlreadyExists(e) {
 				return Result{"running", "installing", "", ""}, nil
 			}
-		} else if e == nil && !owned(existing.Annotations, t, station, org) {
+		} else if e == nil && !ownedWorkload(existing.Annotations, t, station, org) {
 			return failed("CONFLICT", "Existing Service is not owned by this installation"), nil
 		}
 		if e == nil && existing != nil && t.AppCenter && !appCenterServiceMatches(t, wanted, existing, action, operation, station, org) {
@@ -268,7 +281,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		if e == nil && existing != nil && t.Preinstalled && !preinstalledServiceCompatible(wanted, existing) {
 			return failed("CONFLICT", "Preinstalled Service differs from the signed template"), nil
 		}
-		if e == nil && existing != nil && t.InstallationID != "" && !preinstalledServiceCompatible(wanted, existing) {
+		if e == nil && existing != nil && t.InstallationID != "" && !serviceCompatible(t, wanted, existing) {
 			return failed("CONFLICT", "Service differs from the bound installation"), nil
 		}
 		if e != nil {
@@ -330,6 +343,9 @@ func (k *Kubernetes) stepAppCenterDelete(ctx context.Context, t Target, operatio
 	}
 	if !servicesGone {
 		return Result{"running", "stopping", "", ""}, nil
+	}
+	if t.OCIChart != nil {
+		deleteHelmReleaseSecrets(ctx, k.Client, t.Deployment.Namespace, t.AppID)
 	}
 	return Result{"succeeded", "completed", "", ""}, nil
 }

@@ -46,6 +46,11 @@ func (s *Service) InspectBound(ctx context.Context, in *pb.AppCenterInspection) 
 		return nil, status.Error(codes.FailedPrecondition, "Action has no protected execution support")
 	}
 	t, exists := s.Targets[in.AppId+"@"+in.AppVersion]
+	if s.Charts != nil && (!exists || in.TemplateDigest != "sha256:"+hex.EncodeToString(t.Hash[:])) {
+		if ociTarget, ok := s.Charts.Resolve(ctx, s.Targets, in.AppId, in.AppVersion, "", in.TemplateDigest); ok {
+			t, exists = ociTarget, true
+		}
+	}
 	if !exists || t.Deployment == nil || t.AppID != in.AppId || t.Version != in.AppVersion ||
 		in.TemplateDigest != "sha256:"+hex.EncodeToString(t.Hash[:]) || !validInstallationBindings(t) ||
 		t.DiskBytes > 0 || len(t.Models) > 0 {

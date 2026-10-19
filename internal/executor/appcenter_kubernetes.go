@@ -13,8 +13,35 @@ import (
 
 const appCenterOperationKey = "station.verdantflare.com/appcenter-creation-operation"
 
+func ownedWorkload(a map[string]string, t Target, station, org string) bool {
+	if t.OCIChart == nil {
+		return owned(a, t, station, org)
+	}
+	if a[ownerKey] != station || a[orgKey] != org || a[appKey] != t.AppID || len(a[hashKey]) != 64 {
+		return false
+	}
+	if t.InstallationID != "" && a[installationKey] != t.InstallationID {
+		return false
+	}
+	return true
+}
+
+func workloadCompatible(t Target, live *appsv1.Deployment) bool {
+	if t.OCIChart == nil {
+		return preinstalledDeploymentCompatible(t.Deployment, live)
+	}
+	return live != nil && t.Deployment != nil && live.Namespace == t.Deployment.Namespace && live.Name == t.Deployment.Name && sameImages(live, t.Deployment)
+}
+
+func serviceCompatible(t Target, wanted, live *corev1.Service) bool {
+	if t.OCIChart == nil {
+		return preinstalledServiceCompatible(wanted, live)
+	}
+	return live != nil && wanted != nil && live.Namespace == wanted.Namespace && live.Name == wanted.Name
+}
+
 func appCenterWorkloadMatches(t Target, live *appsv1.Deployment, action, operation, station, org string) bool {
-	if (live.DeletionTimestamp != nil && action != "delete") || !owned(live.Annotations, t, station, org) || !preinstalledDeploymentCompatible(t.Deployment, live) {
+	if (live.DeletionTimestamp != nil && action != "delete") || !ownedWorkload(live.Annotations, t, station, org) || !workloadCompatible(t, live) {
 		return false
 	}
 	if action == "install" {
@@ -24,8 +51,8 @@ func appCenterWorkloadMatches(t Target, live *appsv1.Deployment, action, operati
 }
 
 func appCenterServiceMatches(t Target, wanted, live *corev1.Service, action, operation, station, org string) bool {
-	return (live.DeletionTimestamp == nil || action == "delete") && owned(live.Annotations, t, station, org) &&
-		preinstalledServiceCompatible(wanted, live) && (action != "install" || live.Annotations[appCenterOperationKey] == operation)
+	return (live.DeletionTimestamp == nil || action == "delete") && ownedWorkload(live.Annotations, t, station, org) &&
+		serviceCompatible(t, wanted, live) && (action != "install" || live.Annotations[appCenterOperationKey] == operation)
 }
 
 func (k *Kubernetes) CheckAppCenter(ctx context.Context, t Target, action, operation, station, org string, first bool) error {

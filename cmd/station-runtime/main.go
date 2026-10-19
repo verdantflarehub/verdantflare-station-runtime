@@ -266,7 +266,7 @@ func run() int {
 		return 1
 	}
 	server := grpc.NewServer(grpc.MaxRecvMsgSize(16384))
-	appService := &executor.Service{Pool: pool, StationID: station, Targets: targets, Driver: driver, Releases: &releasebinding.Source{Path: os.Getenv("STATION_PREINSTALLED_RELEASE_REGISTRY")}}
+	appService := &executor.Service{Pool: pool, StationID: station, Targets: targets, Charts: executor.NewOCIChartSourceFromEnv(), Driver: driver, Releases: &releasebinding.Source{Path: os.Getenv("STATION_PREINSTALLED_RELEASE_REGISTRY")}}
 	pb.RegisterAppRuntimeServer(server, appService)
 	pb.RegisterAppCenterRuntimeServer(server, appService)
 	probeAddr := os.Getenv("STATION_RUNTIME_PROBE_ADDR")
