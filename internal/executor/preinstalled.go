@@ -25,8 +25,8 @@ func (s *Service) verifyPreinstalled(in *pb.AppRequest, target Target) error {
 	return s.Releases.Verify(b)
 }
 
-// ValidatePreinstalledTarget is shared by the offline release signer and the
-// runtime consumer, so signing cannot bypass the fixed deployment policy.
+// ValidatePreinstalledTarget is shared by the release registry builder and the
+// runtime consumer, so registration cannot bypass the fixed deployment policy.
 func ValidatePreinstalledTarget(target Target) error {
 	if target.Deployment == nil || len(target.Deployment.Spec.Template.Spec.Containers) == 0 {
 		return releasebinding.ErrUntrusted
@@ -52,7 +52,7 @@ func ValidatePreinstalledTarget(target Target) error {
 }
 
 // The active deployment policy requires fixed semantic release tags and
-// Always. Trust binds this exact image reference in the signed template; a tag
+// Always. Trust binds this exact image reference in the registered template; a tag
 // alone is never reported as evidence of the running OCI content digest.
 var preinstalledTag = regexp.MustCompile(`^(?:[a-z0-9][a-z0-9._-]*-)?v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 

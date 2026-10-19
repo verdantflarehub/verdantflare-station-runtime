@@ -11,7 +11,7 @@ import (
 func TestImageProvenanceUsesActualHistoricalRepository(t *testing.T) {
 	for _, repository := range []string{"verdantflarehub/verdantflare-app-image", "verdantflarehub/verdantflare-app-image-mcp", "other/verdantflare-app-image"} {
 		t.Run(repository, func(t *testing.T) {
-			options, now, key := builderFixture(t)
+			options := builderFixture(t)
 			for _, name := range []string{"manifest.yaml", "prepare.json", "package.json", "delivery.json"} {
 				file := filepath.Join(options.Root, name)
 				raw, err := os.ReadFile(file)
@@ -66,7 +66,7 @@ func TestImageProvenanceUsesActualHistoricalRepository(t *testing.T) {
 			if err := os.WriteFile(packagePath, raw, 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err = Build(options, now, key)
+			_, err = Build(options)
 			if (err == nil) != (repository == "verdantflarehub/verdantflare-app-image") {
 				t.Fatal("repository admission mismatch", err)
 			}
@@ -77,7 +77,7 @@ func TestImageProvenanceUsesActualHistoricalRepository(t *testing.T) {
 func TestReleaseBuilderRejectsUnboundOrMismatchedProvenance(t *testing.T) {
 	for _, kind := range []string{"legacy-package", "wrong-app", "wrong-version", "unknown-field", "duplicate-field", "manifest-mapping", "manifest-bytes", "delivery-bytes", "declaration-bytes", "index-bytes", "navigation-bytes", "delivery-image", "delivery-revision"} {
 		t.Run(kind, func(t *testing.T) {
-			options, now, key := builderFixture(t)
+			options := builderFixture(t)
 			packagePath := filepath.Join(options.Root, "package.json")
 			raw, err := os.ReadFile(packagePath)
 			if err != nil {
@@ -138,8 +138,8 @@ func TestReleaseBuilderRejectsUnboundOrMismatchedProvenance(t *testing.T) {
 			if err = os.WriteFile(packagePath, raw, 0600); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = Build(options, now, key); err == nil {
-				t.Fatal("unbound provenance signed")
+			if _, err = Build(options); err == nil {
+				t.Fatal("unbound provenance registered")
 			}
 			if _, err = os.Stat(options.Output); !os.IsNotExist(err) {
 				t.Fatal("invalid provenance created output")

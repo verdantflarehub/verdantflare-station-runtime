@@ -84,7 +84,7 @@ func adoptable(m metav1.ObjectMeta, t Target, station, org string) bool {
 	return true
 }
 
-// A signed source template may reconcile one historical hash, never ownership.
+// A registered source template may reconcile one historical hash, never ownership.
 // adopt still checks the original Deployment UID and every object's full spec
 // before making metadata-only patches.
 func reconcilesHistoricalTemplate(m metav1.ObjectMeta, t Target, station, org string) bool {

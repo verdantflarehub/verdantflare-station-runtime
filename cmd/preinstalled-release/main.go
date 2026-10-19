@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebuilder"
 )
@@ -13,12 +12,11 @@ import (
 func main() {
 	var in releasebuilder.Options
 	var checkTargets bool
-	flag.BoolVar(&checkTargets, "check-targets", false, "read-only target validation; no signing key or output directory")
+	flag.BoolVar(&checkTargets, "check-targets", false, "read-only target validation; no output directory")
 	flag.StringVar(&in.Root, "root", "", "controlled material root")
 	flag.StringVar(&in.Targets, "targets", "", "Runtime target registry relative to root")
 	flag.StringVar(&in.Config, "config", "", "release preparation config relative to root")
 	flag.StringVar(&in.Output, "out", "", "new output directory; existing content is never overwritten")
-	flag.StringVar(&in.SigningKeyEnv, "signing-key-env", "STATION_PREINSTALLED_SIGNING_KEY", "controlled environment variable containing the existing base64 Ed25519 private key")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
@@ -39,7 +37,7 @@ func main() {
 		}
 		return
 	}
-	out, err := releasebuilder.Build(in, time.Now().UTC(), os.Getenv)
+	out, err := releasebuilder.Build(in)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(1)

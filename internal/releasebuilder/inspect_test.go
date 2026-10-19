@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-func TestReleaseBuilderInspectorAcceptsWorkflowTagsAndMatchesSigner(t *testing.T) {
-	options, now, key := builderFixture(t)
+func TestReleaseBuilderInspectorAcceptsWorkflowTagsAndMatchesBuilder(t *testing.T) {
+	options := builderFixture(t)
 	for _, name := range []string{"manifest.yaml", "workload.yaml"} {
 		raw, err := os.ReadFile(filepath.Join(options.Root, name))
 		if err != nil {
@@ -47,9 +47,9 @@ func TestReleaseBuilderInspectorAcceptsWorkflowTagsAndMatchesSigner(t *testing.T
 	if _, err = os.Stat(options.Output); !os.IsNotExist(err) {
 		t.Fatal("inspection wrote output")
 	}
-	bound, err := Build(options, now, key)
+	bound, err := Build(options)
 	if err != nil || inspection[0].TemplateDigest != bound.Releases[0].TemplateDigest {
-		t.Fatal("inspection and signer target differ", err)
+		t.Fatal("inspection and builder target differ", err)
 	}
 	if _, err = InspectTargets(options.Root, "../targets.json"); err == nil {
 		t.Fatal("escaped target registry accepted")
@@ -62,6 +62,6 @@ func TestReleaseBuilderInspectorAcceptsWorkflowTagsAndMatchesSigner(t *testing.T
 		t.Fatal(err)
 	}
 	if _, err = InspectTargets(options.Root, options.Targets); err == nil {
-		t.Fatal("inspection skipped signing target policy")
+		t.Fatal("inspection skipped builder target policy")
 	}
 }

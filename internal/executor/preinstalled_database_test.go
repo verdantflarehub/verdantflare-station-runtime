@@ -2,10 +2,7 @@ package executor
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,7 +11,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 	pb "github.com/verdantflarehub/verdantflare-station-runtime/api/runtimev1"
@@ -83,16 +79,7 @@ func preinstalledDatabaseRelease(t *testing.T, app Target) (*releasebinding.Sour
 	digest := func(raw []byte) string { sum := sha256.Sum256(raw); return "sha256:" + hex.EncodeToString(sum[:]) }
 	packageBytes, chartBytes := []byte(`{"appId":"test-app","version":"1.0.0"}`), []byte("controlled test chart bytes")
 	binding := releasebinding.Binding{ReleaseRef: "test-app-v1", AppID: app.AppID, AppVersion: app.Version, PackageDigest: digest(packageBytes), ChartDigest: digest(chartBytes), TemplateDigest: "sha256:" + hex.EncodeToString(app.Hash[:])}
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err := json.Marshal(releasebinding.SignedRelease{SchemaVersion: 1, Binding: binding, NotBefore: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sig := ed25519.Sign(priv, append([]byte("verdantflare.preinstalled.release.v1\n"), payload...))
-	raw, err := json.Marshal(map[string]any{"schemaVersion": 1, "keys": map[string]string{"test-key": base64.StdEncoding.EncodeToString(pub)}, "releases": []any{map[string]string{"releaseRef": binding.ReleaseRef, "payload": base64.StdEncoding.EncodeToString(payload), "signature": base64.StdEncoding.EncodeToString(sig), "keyId": "test-key", "packageRef": "package.json", "chartRef": "chart.tgz"}}})
+	raw, err := json.Marshal(releasebinding.Registry{SchemaVersion: releasebinding.SchemaVersion, Releases: []releasebinding.Entry{{Binding: binding, PackageRef: "package.json", ChartRef: "chart.tgz"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +103,7 @@ func TestPreinstalledDatabaseAdoptionRecoversPartialMetadataFailure(t *testing.T
 		{ObjectMeta: metav1.ObjectMeta{Name: "service-two", Namespace: app.Deployment.Namespace}, Spec: corev1.ServiceSpec{Selector: map[string]string{"app": "test"}, Ports: []corev1.ServicePort{{Port: 81}}}},
 	}
 	// The production loader binds a normalized controlled Target. This fixture
-	// likewise fixes the complete target before signing and before any live edit.
+	// likewise fixes the complete target before registration and before any live edit.
 	raw, _ := json.Marshal(struct {
 		Deployment any
 		Services   any
@@ -190,7 +177,7 @@ func TestPreinstalledDatabaseAdoptionRecoversPartialMetadataFailure(t *testing.T
 	if patches[first.Name] != 1 || patches[second.Name] != 2 || patches[live.Name] != 1 {
 		t.Fatal("recovery repeated successful metadata write", patches)
 	}
-	if err = os.WriteFile(source.Path, []byte(`{"schemaVersion":1,"keys":{},"releases":[]}`), 0600); err != nil {
+	if err = os.WriteFile(source.Path, []byte(`{"schemaVersion":2,"releases":[]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	beforeActions := len(client.Actions())

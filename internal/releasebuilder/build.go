@@ -1,13 +1,9 @@
-// Package releasebuilder prepares controlled signed release bundles offline. It
-// neither generates production keys nor configures a running Core or Runtime.
+// Package releasebuilder prepares controlled digest release bundles offline. It
+// does not configure a running Core or Runtime.
 package releasebuilder
 
 import (
 	"bytes"
-	"crypto/ed25519"
-	"crypto/sha256"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,7 +13,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
@@ -27,7 +22,6 @@ import (
 var ErrInvalid = errors.New("invalid or unavailable release preparation input")
 var ErrOutput = errors.New("release output must be a new writable directory; existing content is never overwritten")
 var identifier = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
-var environmentName = regexp.MustCompile(`^[A-Z][A-Z0-9_]{0,127}$`)
 
 type Release struct {
 	ReleaseRef string `json:"releaseRef"`
@@ -38,32 +32,15 @@ type Release struct {
 }
 type Config struct {
 	SchemaVersion int       `json:"schemaVersion"`
-	KeyID         string    `json:"keyId"`
-	NotBefore     string    `json:"notBefore"`
-	ExpiresAt     string    `json:"expiresAt"`
 	Releases      []Release `json:"releases"`
 }
-type Options struct{ Root, Targets, Config, Output, SigningKeyEnv string }
+type Options struct{ Root, Targets, Config, Output string }
 type Summary struct {
 	RegistryFile string                   `json:"registryFile"`
 	Releases     []releasebinding.Binding `json:"releases"`
 }
-type registryEntry struct {
-	ReleaseRef string `json:"releaseRef"`
-	Payload    string `json:"payload"`
-	Signature  string `json:"signature"`
-	KeyID      string `json:"keyId"`
-	PackageRef string `json:"packageRef"`
-	ChartRef   string `json:"chartRef"`
-}
-type registry struct {
-	SchemaVersion int               `json:"schemaVersion"`
-	Keys          map[string]string `json:"keys"`
-	Releases      []registryEntry   `json:"releases"`
-}
 type material struct {
-	entry                    registryEntry
-	binding                  releasebinding.Binding
+	entry                    releasebinding.Entry
 	packageBytes, chartBytes []byte
 }
 
@@ -86,16 +63,13 @@ func read(root *os.Root, ref string, limit int64) ([]byte, error) {
 	}
 	return raw, nil
 }
-func digest(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return "sha256:" + hex.EncodeToString(sum[:])
-}
+func digest(raw []byte) string { return releasebinding.Sum(raw) }
 
-// Build requires an existing controlled Ed25519 private key as standard base64
-// (64 bytes). Errors intentionally omit paths, credentials and input contents.
-func Build(options Options, now time.Time, getenv func(string) string) (Summary, error) {
+// Build writes a digest-only registry next to copies of the original package
+// and Chart bytes. Errors intentionally omit paths and input contents.
+func Build(options Options) (Summary, error) {
 	out := Summary{RegistryFile: "registry.json", Releases: []releasebinding.Binding{}}
-	if options.Root == "" || options.Targets == "" || options.Config == "" || options.Output == "" || !environmentName.MatchString(options.SigningKeyEnv) || getenv == nil {
+	if options.Root == "" || options.Targets == "" || options.Config == "" || options.Output == "" {
 		return out, ErrInvalid
 	}
 	root, err := os.OpenRoot(options.Root)
@@ -108,28 +82,9 @@ func Build(options Options, now time.Time, getenv func(string) string) (Summary,
 		return out, err
 	}
 	var cfg Config
-	if strictjson.Decode(bytes.NewReader(raw), 2<<20, &cfg) != nil || cfg.SchemaVersion != 1 || !identifier.MatchString(cfg.KeyID) || len(cfg.Releases) == 0 || len(cfg.Releases) > 128 {
+	if strictjson.Decode(bytes.NewReader(raw), 2<<20, &cfg) != nil || cfg.SchemaVersion != releasebinding.SchemaVersion || len(cfg.Releases) == 0 || len(cfg.Releases) > 128 {
 		return out, ErrInvalid
 	}
-	from, e1 := time.Parse(time.RFC3339, cfg.NotBefore)
-	until, e2 := time.Parse(time.RFC3339, cfg.ExpiresAt)
-	if e1 != nil || e2 != nil || !until.After(from) || now.Before(from) || !now.Before(until) {
-		return out, ErrInvalid
-	}
-	encoded := getenv(options.SigningKeyEnv)
-	if strings.ContainsAny(encoded, " \t\r\n") {
-		return out, ErrInvalid
-	}
-	key, err := base64.StdEncoding.Strict().DecodeString(encoded)
-	if err != nil || len(key) != ed25519.PrivateKeySize {
-		return out, ErrInvalid
-	}
-	canonical := ed25519.NewKeyFromSeed(key[:ed25519.SeedSize])
-	if subtle.ConstantTimeCompare(canonical, key) != 1 {
-		return out, ErrInvalid
-	}
-	private := ed25519.PrivateKey(key)
-	public := private.Public().(ed25519.PublicKey)
 	// Validate the target registry path through the same root before the existing
 	// loader reads it. Manifest/template references are root-confined by loader.
 	if _, err = read(root, options.Targets, 2<<20); err != nil {
@@ -165,16 +120,11 @@ func Build(options Options, now time.Time, getenv func(string) string) (Summary,
 		if !binding.Valid() {
 			return out, ErrInvalid
 		}
-		payload, err := json.Marshal(releasebinding.SignedRelease{SchemaVersion: 1, Binding: binding, NotBefore: cfg.NotBefore, ExpiresAt: cfg.ExpiresAt})
-		if err != nil {
-			return out, ErrInvalid
-		}
-		signature := ed25519.Sign(private, append([]byte("verdantflare.preinstalled.release.v1\n"), payload...))
-		registration := registryEntry{ReleaseRef: entry.ReleaseRef, Payload: base64.StdEncoding.EncodeToString(payload), Signature: base64.StdEncoding.EncodeToString(signature), KeyID: cfg.KeyID, PackageRef: entry.ReleaseRef + "/package.json", ChartRef: entry.ReleaseRef + "/chart.tgz"}
-		materials = append(materials, material{registration, binding, packageBytes, chartBytes})
+		registration := releasebinding.Entry{Binding: binding, PackageRef: entry.ReleaseRef + "/package.json", ChartRef: entry.ReleaseRef + "/chart.tgz"}
+		materials = append(materials, material{registration, packageBytes, chartBytes})
 		out.Releases = append(out.Releases, binding)
 	}
-	registration := registry{SchemaVersion: 1, Keys: map[string]string{cfg.KeyID: base64.StdEncoding.EncodeToString(public)}, Releases: []registryEntry{}}
+	registration := releasebinding.Registry{SchemaVersion: releasebinding.SchemaVersion, Releases: []releasebinding.Entry{}}
 	for _, item := range materials {
 		registration.Releases = append(registration.Releases, item.entry)
 	}
@@ -204,7 +154,7 @@ func Build(options Options, now time.Time, getenv func(string) string) (Summary,
 		return nil
 	}
 	for _, item := range materials {
-		if err = outputRoot.Mkdir(item.binding.ReleaseRef, 0700); err != nil {
+		if err = outputRoot.Mkdir(item.entry.ReleaseRef, 0700); err != nil {
 			return out, ErrOutput
 		}
 		if write(item.entry.PackageRef, item.packageBytes) != nil || write(item.entry.ChartRef, item.chartBytes) != nil {
@@ -215,7 +165,7 @@ func Build(options Options, now time.Time, getenv func(string) string) (Summary,
 	if err = write(out.RegistryFile, raw); err != nil {
 		return out, err
 	}
-	consumer := &releasebinding.Source{Path: filepath.Join(options.Output, out.RegistryFile), Now: func() time.Time { return now }}
+	consumer := &releasebinding.Source{Path: filepath.Join(options.Output, out.RegistryFile)}
 	for _, binding := range out.Releases {
 		if consumer.Verify(binding) != nil {
 			return out, ErrOutput

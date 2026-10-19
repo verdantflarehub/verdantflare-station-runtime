@@ -1,5 +1,5 @@
 // Package computepolicy applies a versioned station deployment policy without
-// rewriting signed releases, durable request hashes or storage identities.
+// rewriting registered releases, durable request hashes or storage identities.
 package computepolicy
 
 import (

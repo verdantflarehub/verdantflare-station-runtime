@@ -11,7 +11,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestComputePolicyPreservesSignedTemplateAndRejectsDrift(t *testing.T) {
+func TestComputePolicyPreservesRegisteredTemplateAndRejectsDrift(t *testing.T) {
 	t.Setenv(computepolicy.Environment, computepolicy.Unrestricted)
 	want := target().Deployment
 	want.Spec.Template.Spec.Containers[0].Resources = corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi"), "nvidia.com/gpu": resource.MustParse("1")}}
@@ -21,7 +21,7 @@ func TestComputePolicyPreservesSignedTemplateAndRejectsDrift(t *testing.T) {
 		t.Fatal("authorized policy rejected")
 	}
 	if len(want.Spec.Template.Spec.Containers[0].Resources.Requests) != 3 {
-		t.Fatal("signed template mutated")
+		t.Fatal("registered template mutated")
 	}
 	for _, mutate := range []func(*corev1.Container){func(c *corev1.Container) { c.Image = "other:v1.0.0" }, func(c *corev1.Container) { c.Resources.Requests["nvidia.com/gpu"] = resource.MustParse("2") }, func(c *corev1.Container) { c.Resources.Requests[corev1.ResourceCPU] = resource.MustParse("3") }} {
 		bad := live.DeepCopy()

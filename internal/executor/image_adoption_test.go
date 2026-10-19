@@ -11,7 +11,7 @@ import (
 )
 
 func TestImageHistoricalAdoptionMetadataAndGuards(t *testing.T) {
-	for _, scenario := range []string{"success", "unsigned", "version", "app", "missing-owner", "foreign-installation", "wrong-hash", "malformed-hash", "uid", "spec"} {
+	for _, scenario := range []string{"success", "unregistered", "version", "app", "missing-owner", "foreign-installation", "wrong-hash", "malformed-hash", "uid", "spec"} {
 		t.Run(scenario, func(t *testing.T) {
 			app := target()
 			app.AppID, app.Version = "image-mcp", "0.2.16"
@@ -24,7 +24,7 @@ func TestImageHistoricalAdoptionMetadataAndGuards(t *testing.T) {
 			live.Annotations = annotations(app, "station", "org")
 			live.Annotations[hashKey] = old
 			switch scenario {
-			case "unsigned":
+			case "unregistered":
 				app.Preinstalled = false
 			case "version":
 				app.Version = "0.2.18"

@@ -8,10 +8,10 @@ import (
 	"testing"
 )
 
-func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
+func TestVideoSourceRegistrationBindsBothContainers(t *testing.T) {
 	for _, scenario := range []string{"valid", "valid-target", "valid-rebased-source", "valid-rebased-target", "valid-filter-target", "missing-sidecar", "wrong-sidecar-image", "invalid-sidecar-digest", "wrong-name", "duplicate", "primary-digest", "wrong-repository", "wrong-version", "extra-container"} {
 		t.Run(scenario, func(t *testing.T) {
-			options, now, key := builderFixture(t)
+			options := builderFixture(t)
 			for _, name := range []string{"manifest.yaml", "workload.yaml", "prepare.json", "package.json", "delivery.json"} {
 				path := filepath.Join(options.Root, name)
 				raw, err := os.ReadFile(path)
@@ -93,14 +93,14 @@ func TestVideoSourceSigningBindsBothContainers(t *testing.T) {
 			if err := os.WriteFile(packagePath, raw, 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := Build(options, now, key)
+			_, err := Build(options)
 			valid := strings.HasPrefix(scenario, "valid")
 			if (err == nil) != valid {
-				t.Fatal("signing admission mismatch", err)
+				t.Fatal("registration admission mismatch", err)
 			}
 			if !valid {
 				if _, err := os.Stat(options.Output); !os.IsNotExist(err) {
-					t.Fatal("invalid source created signed output")
+					t.Fatal("invalid source created registered output")
 				}
 			}
 		})

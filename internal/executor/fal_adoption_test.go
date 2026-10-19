@@ -13,7 +13,7 @@ import (
 
 func TestFalHistoricalAdoptionPreservesWorkloadAndServices(t *testing.T) {
 	for _, version := range []string{"0.2.7"} {
-		for _, scenario := range []string{"success", "unsigned", "version", "app", "owner", "installation", "hash", "uid", "image", "env", "storage", "service-owner", "service-route"} {
+		for _, scenario := range []string{"success", "unregistered", "version", "app", "owner", "installation", "hash", "uid", "image", "env", "storage", "service-owner", "service-route"} {
 			t.Run(version+"/"+scenario, func(t *testing.T) {
 				app := target()
 				app.AppID, app.Version = "fal", version
@@ -28,7 +28,7 @@ func TestFalHistoricalAdoptionPreservesWorkloadAndServices(t *testing.T) {
 				svc.UID, svc.Annotations = "service-original", annotations(app, "station", "org")
 				svc.Annotations[hashKey] = old
 				switch scenario {
-				case "unsigned":
+				case "unregistered":
 					app.Preinstalled = false
 				case "version":
 					app.Version = "0.2.8"

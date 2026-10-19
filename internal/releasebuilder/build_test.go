@@ -1,9 +1,6 @@
 package releasebuilder
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,21 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
 )
 
-func builderFixture(t *testing.T) (Options, time.Time, func(string) string) {
+func builderFixture(t *testing.T) Options {
 	t.Helper()
 	root := t.TempDir()
-	now := time.Date(2026, 10, 11, 1, 0, 0, 0, time.UTC)
-	pub, key, err := ed25519.GenerateKey(rand.Reader)
-	_ = pub
-	if err != nil {
-		t.Fatal(err)
-	}
 	files := map[string][]byte{
 		"targets.json":  []byte(`[{"manifest_file":"manifest.yaml","namespace":"test-runtime"}]`),
 		"manifest.yaml": []byte("app_id: test-app\nversion: 1.0.0\nrequired_models: []\nrequired_resources: {gpu: 0, disk_bytes: 0}\ndeployment:\n  template_ref: workload.yaml\n  workload_name: test-app\n  images: [{component: server, image: 'example.invalid/server:1.0.0'}]\n"),
@@ -33,6 +23,7 @@ func builderFixture(t *testing.T) (Options, time.Time, func(string) string) {
 		"package.json":  []byte(`{"testPackage":"actual input bytes"}`),
 		"chart.tgz":     []byte("actual fixture chart bytes"),
 	}
+	var err error
 	files["delivery.json"], err = json.Marshal(delivery{SchemaVersion: 1, AppID: "test-app", AppVersion: "1.0.0", Image: "example.invalid/server:1.0.0", ImageDigest: digest([]byte("fixture image bytes")), Repository: "verdantflarehub/verdantflare-app-test-app", Revision: strings.Repeat("a", 40)})
 	if err != nil {
 		t.Fatal(err)
@@ -45,7 +36,7 @@ func builderFixture(t *testing.T) (Options, time.Time, func(string) string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	config := Config{SchemaVersion: 1, KeyID: "test-key", NotBefore: now.Add(-time.Hour).Format(time.RFC3339), ExpiresAt: now.Add(time.Hour).Format(time.RFC3339), Releases: []Release{{ReleaseRef: "test-app-v1", AppID: "test-app", AppVersion: "1.0.0", PackageRef: "package.json", ChartRef: "chart.tgz"}}}
+	config := Config{SchemaVersion: releasebinding.SchemaVersion, Releases: []Release{{ReleaseRef: "test-app-v1", AppID: "test-app", AppVersion: "1.0.0", PackageRef: "package.json", ChartRef: "chart.tgz"}}}
 	files["prepare.json"], err = json.Marshal(config)
 	if err != nil {
 		t.Fatal(err)
@@ -55,17 +46,12 @@ func builderFixture(t *testing.T) (Options, time.Time, func(string) string) {
 			t.Fatal(err)
 		}
 	}
-	return Options{Root: root, Targets: "targets.json", Config: "prepare.json", Output: filepath.Join(t.TempDir(), "new-release"), SigningKeyEnv: "TEST_SIGNING_KEY"}, now, func(name string) string {
-		if name != "TEST_SIGNING_KEY" {
-			t.Fatal("uncontrolled environment lookup")
-		}
-		return base64.StdEncoding.EncodeToString(key)
-	}
+	return Options{Root: root, Targets: "targets.json", Config: "prepare.json", Output: filepath.Join(t.TempDir(), "new-release")}
 }
 
 func TestReleaseBuilderBindsActualMaterialsAndConsumerTarget(t *testing.T) {
-	options, now, key := builderFixture(t)
-	out, err := Build(options, now, key)
+	options := builderFixture(t)
+	out, err := Build(options)
 	if err != nil || len(out.Releases) != 1 {
 		t.Fatal(out, err)
 	}
@@ -77,7 +63,7 @@ func TestReleaseBuilderBindsActualMaterialsAndConsumerTarget(t *testing.T) {
 	if out.Releases[0].TemplateDigest != "sha256:"+hex.EncodeToString(target.Hash[:]) {
 		t.Fatal("builder invented a different template hash")
 	}
-	source := &releasebinding.Source{Path: filepath.Join(options.Output, out.RegistryFile), Now: func() time.Time { return now }}
+	source := &releasebinding.Source{Path: filepath.Join(options.Output, out.RegistryFile)}
 	if err = source.Verify(out.Releases[0]); err != nil {
 		t.Fatal("consumer cannot verify builder output", err)
 	}
@@ -88,21 +74,21 @@ func TestReleaseBuilderBindsActualMaterialsAndConsumerTarget(t *testing.T) {
 			t.Fatal("source material changed during copy")
 		}
 	}
-	if _, err = Build(options, now, key); !errors.Is(err, ErrOutput) {
+	if _, err = Build(options); !errors.Is(err, ErrOutput) {
 		t.Fatal("existing release overwritten", err)
 	}
 	if err = os.WriteFile(filepath.Join(options.Output, "test-app-v1", "chart.tgz"), []byte("changed"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if source.Verify(out.Releases[0]) == nil {
-		t.Fatal("post-signing material mutation accepted")
+		t.Fatal("post-registration material mutation accepted")
 	}
 }
 
 func TestReleaseBuilderRejectsInvalidInputsBeforeWriting(t *testing.T) {
-	for _, kind := range []string{"missing-key", "malformed-key", "inconsistent-private-key", "unknown-field", "duplicate-field", "missing-target", "expired", "escape", "wrong-pull-policy", "mutable-image", "public-service"} {
+	for _, kind := range []string{"old-schema", "unknown-field", "duplicate-field", "missing-target", "escape", "wrong-pull-policy", "mutable-image", "public-service"} {
 		t.Run(kind, func(t *testing.T) {
-			options, now, key := builderFixture(t)
+			options := builderFixture(t)
 			rewrite := func(name, old, next string) {
 				raw, err := os.ReadFile(filepath.Join(options.Root, name))
 				if err != nil {
@@ -113,22 +99,14 @@ func TestReleaseBuilderRejectsInvalidInputsBeforeWriting(t *testing.T) {
 				}
 			}
 			switch kind {
-			case "missing-key":
-				key = func(string) string { return "" }
-			case "malformed-key":
-				key = func(string) string { return "not-a-private-key" }
-			case "inconsistent-private-key":
-				valid, _ := base64.StdEncoding.DecodeString(key("TEST_SIGNING_KEY"))
-				valid[len(valid)-1] ^= 1
-				key = func(string) string { return base64.StdEncoding.EncodeToString(valid) }
+			case "old-schema":
+				rewrite("prepare.json", `"schemaVersion":2`, `"schemaVersion":1`)
 			case "unknown-field":
-				rewrite("prepare.json", `"schemaVersion":1`, `"schemaVersion":1,"trusted":true`)
+				rewrite("prepare.json", `"schemaVersion":2`, `"schemaVersion":2,"keyId":"test-key"`)
 			case "duplicate-field":
-				rewrite("prepare.json", `"schemaVersion":1`, `"schemaVersion":1,"schemaVersion":1`)
+				rewrite("prepare.json", `"schemaVersion":2`, `"schemaVersion":2,"schemaVersion":2`)
 			case "missing-target":
 				rewrite("prepare.json", `"appVersion":"1.0.0"`, `"appVersion":"2.0.0"`)
-			case "expired":
-				now = now.Add(2 * time.Hour)
 			case "escape":
 				rewrite("prepare.json", `"packageRef":"package.json"`, `"packageRef":"../package.json"`)
 			case "wrong-pull-policy":
@@ -147,8 +125,8 @@ func TestReleaseBuilderRejectsInvalidInputsBeforeWriting(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := Build(options, now, key); !errors.Is(err, ErrInvalid) {
-				t.Fatal("invalid inputs signed", err)
+			if _, err := Build(options); !errors.Is(err, ErrInvalid) {
+				t.Fatal("invalid inputs registered", err)
 			}
 			if _, err := os.Stat(options.Output); !errors.Is(err, os.ErrNotExist) {
 				t.Fatal("failed validation wrote release output")

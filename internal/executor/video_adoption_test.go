@@ -13,7 +13,7 @@ import (
 
 func TestVideoHistoricalAdoptionPreservesWorkloadAndServices(t *testing.T) {
 	for _, version := range []string{"0.17.28", "0.17.30", "0.17.35", "0.17.38"} {
-		for _, scenario := range []string{"success", "unsigned", "version", "app", "owner", "installation", "hash", "uid", "sidecar", "env", "storage", "service-owner", "service-route"} {
+		for _, scenario := range []string{"success", "unregistered", "version", "app", "owner", "installation", "hash", "uid", "sidecar", "env", "storage", "service-owner", "service-route"} {
 			t.Run(version+"/"+scenario, func(t *testing.T) {
 				app := target()
 				app.AppID, app.Version = "video-mcp", version
@@ -30,7 +30,7 @@ func TestVideoHistoricalAdoptionPreservesWorkloadAndServices(t *testing.T) {
 				svc.UID, svc.Annotations = "service-original", annotations(app, "station", "org")
 				svc.Annotations[hashKey] = old
 				switch scenario {
-				case "unsigned":
+				case "unregistered":
 					app.Preinstalled = false
 				case "version":
 					app.Version = "0.17.29"

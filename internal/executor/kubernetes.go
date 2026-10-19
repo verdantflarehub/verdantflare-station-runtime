@@ -174,7 +174,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		return failed("CONFLICT", "Preinstalled install cannot adopt an existing workload"), nil
 	}
 	if t.Preinstalled && !preinstalledDeploymentCompatible(t.Deployment, live) {
-		return failed("CONFLICT", "Preinstalled workload differs from the signed template"), nil
+		return failed("CONFLICT", "Preinstalled workload differs from the registered template"), nil
 	}
 	if !ownedWorkload(live.Annotations, t, station, org) {
 		// Registration is an internal step of the requested lifecycle operation.
@@ -324,7 +324,7 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			return failed("CONFLICT", "Preinstalled install cannot reuse an existing Service"), nil
 		}
 		if e == nil && existing != nil && t.Preinstalled && !preinstalledServiceCompatible(wanted, existing) {
-			return failed("CONFLICT", "Preinstalled Service differs from the signed template"), nil
+			return failed("CONFLICT", "Preinstalled Service differs from the registered template"), nil
 		}
 		if e == nil && existing != nil && t.InstallationID != "" && !serviceCompatible(t, wanted, existing) {
 			return failed("CONFLICT", "Service differs from the bound installation"), nil

@@ -16,7 +16,7 @@ type TargetSummary struct {
 }
 
 // InspectTargets performs the same target loading/policy checks as Build without
-// accessing signing credentials, writing files, or claiming release trust.
+// writing files or claiming release trust.
 func InspectTargets(rootPath, registryRef string) ([]TargetSummary, error) {
 	root, err := os.OpenRoot(rootPath)
 	if err != nil {

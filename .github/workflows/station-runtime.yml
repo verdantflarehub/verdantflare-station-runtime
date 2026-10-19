@@ -3,7 +3,7 @@ name: Station Runtime
 env:
   REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
   IMAGE_NAME: wod/verdantflare-station
-  IMAGE_VERSION: station-runtime-v0.2.64
+  IMAGE_VERSION: station-runtime-v0.2.65
 
 on:
   push:
@@ -46,24 +46,6 @@ jobs:
         env:
           IMAGE: ${{ steps.registry.outputs.image }}:${{ env.IMAGE_VERSION }}
         run: bash scripts/check-image-absent.sh
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Build controlled release CLI
-        shell: bash
-        env:
-          CGO_ENABLED: '0'
-          GOARCH: amd64
-        run: |
-          set -euo pipefail
-          mkdir -p dist/preinstalled-release
-          GOOS=linux go build -trimpath -ldflags="-s -w" -o dist/preinstalled-release/preinstalled-release-linux-amd64 ./cmd/preinstalled-release
-          GOOS=windows go build -trimpath -ldflags="-s -w" -o dist/preinstalled-release/preinstalled-release-windows-amd64.exe ./cmd/preinstalled-release
-          jq -n --arg repository "$GITHUB_REPOSITORY" --arg revision "$GITHUB_SHA" --arg ref "$GITHUB_REF" --arg version "$IMAGE_VERSION" --arg runId "$GITHUB_RUN_ID" --arg runAttempt "$GITHUB_RUN_ATTEMPT" --arg goVersion "$(go env GOVERSION)" \
-            '{schemaVersion:1,repository:$repository,revision:$revision,ref:$ref,version:$version,runId:$runId,runAttempt:$runAttempt,goVersion:$goVersion}' > dist/preinstalled-release/source.json
-          cd dist/preinstalled-release
-          sha256sum preinstalled-release-linux-amd64 preinstalled-release-windows-amd64.exe source.json > SHA256SUMS
       - name: Publish versioned release image
         uses: docker/build-push-action@v6
         with:
@@ -75,10 +57,3 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           sbom: false
-      - name: Deliver controlled release CLI
-        uses: actions/upload-artifact@v4
-        with:
-          name: preinstalled-release-${{ env.IMAGE_VERSION }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/preinstalled-release/
-          if-no-files-found: error
-          retention-days: 90

@@ -62,7 +62,7 @@ func sourceRepository(appID string) string {
 
 // Provenance is specific to the preinstalled delivery slice; the existing v1
 // Runtime manifest and shared release binding remain unchanged. All original
-// bytes referenced by the package must still exist before signing.
+// bytes referenced by the package must still exist before registration.
 func verifyProvenance(root *os.Root, raw []byte, target executor.Target) error {
 	var p provenance
 	if strictjson.Decode(bytes.NewReader(raw), 4<<20, &p) != nil || p.SchemaVersion != 1 || p.Kind != provenanceKind || p.AppID != target.AppID || p.AppVersion != target.Version || p.Manifest.Ref != target.ManifestRef {
