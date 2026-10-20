@@ -34,12 +34,22 @@ type ManagementStepResult struct {
 func (s ManagementStep) valid() bool {
 	id, err := uuid.Parse(s.RequestID)
 	return managementID(s.OperationID) && err == nil && id.Version() == 4 && id.Variant() == uuid.RFC4122 && id.String() == s.RequestID &&
-		managementDigest.MatchString(s.InputDigest) && slices.Contains([]string{"prepare", "restore", "release_source", "release_target"}, s.Mode)
+		managementDigest.MatchString(s.InputDigest) && slices.Contains([]string{"prepare", "restore", "release_source", "release_target", "verify_forward"}, s.Mode)
 }
 
 func (j *ManagementJournal) ReconcileStep(ctx context.Context, step ManagementStep) (ManagementStepResult, error) {
 	if !step.valid() {
 		return ManagementStepResult{}, ErrManagementReplacement
+	}
+	if step.Mode == "verify_forward" {
+		err := j.verifyForward(ctx, step)
+		if errors.Is(err, ErrManagementReplacement) {
+			return ManagementStepResult{step, "rejected"}, nil
+		}
+		if err != nil {
+			return ManagementStepResult{}, err
+		}
+		return ManagementStepResult{step, "verified"}, nil
 	}
 	progress, err := j.reconcile(ctx, step.OperationID, step.Mode, step.InputDigest)
 	if err != nil {
