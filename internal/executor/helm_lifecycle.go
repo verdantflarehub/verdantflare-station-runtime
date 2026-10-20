@@ -75,12 +75,19 @@ func renderChart(t Target, vals map[string]interface{}, operation string) (strin
 	install := action.NewInstall(new(action.Configuration))
 	install.ClientOnly = true
 	install.DryRun = true
+	install.DisableHooks = true
 	install.ReleaseName = t.AppID
 	install.Namespace = t.Deployment.Namespace
 	install.PostRenderer = &stationPostRenderer{target: t, station: vals["station"].(map[string]interface{}), operation: operation}
 	rel, err := install.Run(chart, vals)
 	if err != nil {
 		return "", err
+	}
+	// Helm keeps hooks outside rel.Manifest and does not pass them through the
+	// post-renderer. Reject the package rather than silently ignoring resources
+	// that would bypass the installation namespace and ownership checks.
+	if len(rel.Hooks) != 0 {
+		return "", errors.New("Chart contains unsupported Helm hooks")
 	}
 	if err := checkChartManifest(t, rel.Manifest, vals); err != nil {
 		return "", err
@@ -172,6 +179,7 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 		install := action.NewInstall(cfg)
 		install.ReleaseName = t.AppID
 		install.Namespace = t.Deployment.Namespace
+		install.DisableHooks = true
 		install.PostRenderer = &stationPostRenderer{target: t, station: vals["station"].(map[string]interface{}), operation: operation}
 		_, err = install.RunWithContext(ctx, chart, vals)
 		return err == nil, err
@@ -207,6 +215,7 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 	}
 	upgrade := action.NewUpgrade(cfg)
 	upgrade.Namespace = t.Deployment.Namespace
+	upgrade.DisableHooks = true
 	upgrade.PostRenderer = &stationPostRenderer{target: t, station: vals["station"].(map[string]interface{}), operation: operation}
 	if current.Manifest == "" {
 		if err := verifyLegacyAdoption(ctx, cfg, manifest, t, station, org); err != nil {
@@ -315,6 +324,7 @@ func (h *HelmLifecycle) Uninstall(ctx context.Context, t Target, station, org st
 	}
 	uninstall := action.NewUninstall(cfg)
 	uninstall.Wait = false
+	uninstall.DisableHooks = true
 	_, err = uninstall.Run(t.AppID)
 	return err == nil, err
 }

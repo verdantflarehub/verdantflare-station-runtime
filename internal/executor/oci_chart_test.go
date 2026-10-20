@@ -18,7 +18,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func buildTestChartTGZ(t *testing.T, name, chartVer, appVer, imageTag string) []byte {
+func buildTestChartTGZ(t *testing.T, name, chartVer, appVer, imageTag string, extraTemplates ...map[string]string) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
@@ -29,6 +29,11 @@ func buildTestChartTGZ(t *testing.T, name, chartVer, appVer, imageTag string) []
 		name + "/channel.yaml":              "capabilities:\n  - h3-max\n",
 		name + "/templates/deployment.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + name + "-manager\nspec:\n  selector:\n    matchLabels:\n      app: " + name + "\n  template:\n    metadata:\n      labels:\n        app: " + name + "\n    spec:\n      containers:\n        - name: " + name + "-manager\n          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}\n          env:\n            - name: CHANNEL_METADATA_FILE\n              value: /etc/channel.yaml\n          volumeMounts:\n            - name: metadata\n              mountPath: /etc/channel.yaml\n              subPath: channel.yaml\n      volumes:\n        - name: metadata\n          configMap:\n            name: " + name + "-metadata\n",
 		name + "/templates/configmap.yaml":  "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: " + name + "-metadata\ndata:\n  channel.yaml: |\n{{ .Files.Get \"channel.yaml\" | indent 4 }}\n",
+	}
+	for _, templates := range extraTemplates {
+		for filename, content := range templates {
+			files[name+"/templates/"+filename] = content
+		}
 	}
 	for filename, content := range files {
 		raw := []byte(content)
@@ -132,5 +137,12 @@ func TestOCIChartSourceResolveAndRender(t *testing.T) {
 		if !strings.Contains(manifest, fragment) {
 			t.Fatalf("rendered Chart omitted %q", fragment)
 		}
+	}
+	hookChart := buildTestChartTGZ(t, "comfyui", "0.1.0", "0.1.15", "comfyui-v0.1.15", map[string]string{
+		"hook.yaml": "apiVersion: batch/v1\nkind: Job\nmetadata:\n  name: escape\n  namespace: kube-system\n  annotations:\n    helm.sh/hook: pre-install\nspec:\n  template:\n    spec:\n      restartPolicy: Never\n      containers:\n        - name: escape\n          image: busybox\n",
+	})
+	resolved.OCIChart.Package = hookChart
+	if _, err := renderChart(resolved, chartValues(resolved, "station-1", "org-1"), "operation-1"); err == nil || !strings.Contains(err.Error(), "unsupported Helm hooks") {
+		t.Fatalf("expected Helm hook rejection, got %v", err)
 	}
 }
