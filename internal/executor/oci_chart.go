@@ -6,7 +6,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,15 +14,11 @@ import (
 	"net/http"
 	"os"
 	"path"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/yaml"
 )
 
@@ -35,9 +30,8 @@ type OCIChartMeta struct {
 	ManifestDigest string
 	PackageDigest  string
 	Description    string
-	RawChartMeta   map[string]any
 	Values         map[string]any
-	Templates      []map[string]any
+	Package        []byte
 }
 
 type OCIChartSource struct {
@@ -285,7 +279,6 @@ func parseChartArchive(rawTGZ []byte, appID, releaseDigest, packageDigest string
 
 	tr := tar.NewReader(gz)
 	var chartYAML, valuesYAML []byte
-	var templates []map[string]any
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -309,11 +302,6 @@ func parseChartArchive(rawTGZ []byte, appID, releaseDigest, packageDigest string
 			chartYAML = data
 		case rel == "values.yaml":
 			valuesYAML = data
-		case strings.HasPrefix(rel, "templates/"):
-			templates = append(templates, map[string]any{
-				"name": rel,
-				"data": base64.StdEncoding.EncodeToString(data),
-			})
 		}
 	}
 	if len(chartYAML) == 0 {
@@ -345,106 +333,7 @@ func parseChartArchive(rawTGZ []byte, appID, releaseDigest, packageDigest string
 		ManifestDigest: releaseDigest,
 		PackageDigest:  packageDigest,
 		Description:    strings.TrimSpace(desc),
-		RawChartMeta:   chartMeta,
 		Values:         values,
-		Templates:      templates,
+		Package:        append([]byte(nil), rawTGZ...),
 	}, nil
-}
-
-func recordHelmReleaseSecret(ctx context.Context, client kubernetes.Interface, ns string, t Target) {
-	if client == nil || t.OCIChart == nil || t.AppID == "" {
-		return
-	}
-	secrets := client.CoreV1().Secrets(ns)
-	list, err := secrets.List(ctx, metav1.ListOptions{LabelSelector: "owner=helm,name=" + t.AppID})
-	maxVer := 0
-	if err == nil && list != nil {
-		for i := range list.Items {
-			sec := &list.Items[i]
-			if sec.Labels["status"] == "deployed" && sec.Annotations != nil && sec.Annotations["station.verdantflare.com/package-digest"] == t.OCIChart.PackageDigest {
-				return
-			}
-			v, _ := strconv.Atoi(sec.Labels["version"])
-			if v > maxVer {
-				maxVer = v
-			}
-			if sec.Labels["status"] == "deployed" {
-				secCopy := sec.DeepCopy()
-				secCopy.Labels["status"] = "superseded"
-				_, _ = secrets.Update(ctx, secCopy, metav1.UpdateOptions{})
-			}
-		}
-	}
-	nextVer := maxVer + 1
-	desc := "Install complete"
-	if maxVer > 0 {
-		desc = "Upgrade complete"
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	releaseObj := map[string]any{
-		"name":      t.AppID,
-		"namespace": ns,
-		"version":   nextVer,
-		"info": map[string]any{
-			"first_deployed": now,
-			"last_deployed":  now,
-			"deleted":        "",
-			"description":    desc,
-			"status":         "deployed",
-		},
-		"chart": map[string]any{
-			"metadata":  t.OCIChart.RawChartMeta,
-			"values":    t.OCIChart.Values,
-			"templates": t.OCIChart.Templates,
-		},
-		"config": map[string]any{},
-	}
-	rawJSON, err := json.Marshal(releaseObj)
-	if err != nil {
-		return
-	}
-	var gzBuf bytes.Buffer
-	gz := gzip.NewWriter(&gzBuf)
-	_, _ = gz.Write(rawJSON)
-	_ = gz.Close()
-	encoded := base64.StdEncoding.EncodeToString(gzBuf.Bytes())
-
-	secName := fmt.Sprintf("sh.helm.release.v1.%s.v%d", t.AppID, nextVer)
-	sec := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      secName,
-			Namespace: ns,
-			Labels: map[string]string{
-				"name":       t.AppID,
-				"owner":      "helm",
-				"status":     "deployed",
-				"version":    strconv.Itoa(nextVer),
-				"modifiedAt": strconv.FormatInt(time.Now().Unix(), 10),
-			},
-			Annotations: map[string]string{
-				"station.verdantflare.com/package-digest": t.OCIChart.PackageDigest,
-			},
-		},
-		Type: corev1.SecretType("helm.sh/release.v1"),
-		Data: map[string][]byte{
-			"release": []byte(encoded),
-		},
-	}
-	if _, err := secrets.Create(ctx, sec, metav1.CreateOptions{}); apierrors.IsAlreadyExists(err) {
-		_, _ = secrets.Update(ctx, sec, metav1.UpdateOptions{})
-	}
-}
-
-func deleteHelmReleaseSecrets(ctx context.Context, client kubernetes.Interface, ns, appID string) {
-	if client == nil || appID == "" {
-		return
-	}
-	secrets := client.CoreV1().Secrets(ns)
-	list, err := secrets.List(ctx, metav1.ListOptions{LabelSelector: "owner=helm,name=" + appID})
-	if err != nil || list == nil {
-		return
-	}
-	for i := range list.Items {
-		_ = secrets.Delete(ctx, list.Items[i].Name, metav1.DeleteOptions{})
-	}
 }

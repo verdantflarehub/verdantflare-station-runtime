@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -35,6 +36,7 @@ type Driver interface {
 }
 type Kubernetes struct {
 	Client              kubernetes.Interface
+	Charts              ChartLifecycle
 	maintenanceExec     legacyMaintenanceExec
 	falActivityExec     legacyMaintenanceExec
 	googleActivityExec  legacyMaintenanceExec
@@ -70,7 +72,12 @@ func NewKubernetes(path, contextName string) (*Kubernetes, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Kubernetes{Client: c, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram), grokActivityExec: newFixedMaintenanceExec(cfg, c, legacyGrokActivityProgram), chatgptActivityExec: newFixedMaintenanceExec(cfg, c, legacyChatGPTActivityProgram), videoActivityExec: newFixedMaintenanceExec(cfg, c, legacyVideoActivityProgram)}, nil
+	flags := genericclioptions.NewConfigFlags(true)
+	if path != "" {
+		flags.KubeConfig = &path
+		flags.Context = &contextName
+	}
+	return &Kubernetes{Client: c, Charts: &HelmLifecycle{Getter: flags}, maintenanceExec: newLegacyMaintenanceExec(cfg, c), falActivityExec: newFixedMaintenanceExec(cfg, c, legacyFalActivityProgram), googleActivityExec: newFixedMaintenanceExec(cfg, c, legacyGoogleActivityProgram), grokActivityExec: newFixedMaintenanceExec(cfg, c, legacyGrokActivityProgram), chatgptActivityExec: newFixedMaintenanceExec(cfg, c, legacyChatGPTActivityProgram), videoActivityExec: newFixedMaintenanceExec(cfg, c, legacyVideoActivityProgram)}, nil
 }
 func annotations(t Target, station, org string) map[string]string {
 	values := map[string]string{ownerKey: station, orgKey: org, appKey: t.AppID, hashKey: hex.EncodeToString(t.Hash[:])}
@@ -114,7 +121,13 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 			return failed("CONFLICT", "Protected workload identity or ownership changed"), nil
 		}
 	}
+	if t.OCIChart != nil && !t.AppCenter {
+		return failed("CONFLICT", "OCI Chart requires a protected AppCenter installation"), nil
+	}
 	if t.AppCenter && action == "delete" {
+		if t.OCIChart != nil {
+			return k.stepOCIChartDelete(ctx, t, station, org)
+		}
 		return k.stepAppCenterDelete(ctx, t, operation, station, org)
 	}
 	// Disruptive commands without protected execution fail closed.
@@ -126,6 +139,9 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 	}
 	if action != "adopt" && (len(t.Models) > 0 || (!t.AppCenter && t.GPU > 0)) {
 		return failed("SERVICE_UNAVAILABLE", "Model preparation and GPU readiness adapters are not connected"), nil
+	}
+	if t.AppCenter && t.OCIChart != nil && (action == "install" || action == "upgrade") {
+		return k.stepOCIChart(ctx, t, action, operation, station, org)
 	}
 	deployments := k.Client.AppsV1().Deployments(t.Deployment.Namespace)
 	live, err := deployments.Get(ctx, t.Deployment.Name, metav1.GetOptions{})
@@ -151,9 +167,6 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 		}
 		if err != nil {
 			return Result{}, err
-		}
-		if t.OCIChart != nil {
-			recordHelmReleaseSecret(ctx, k.Client, t.Deployment.Namespace, t)
 		}
 		return Result{"running", "installing", "", ""}, nil
 	}
@@ -230,7 +243,6 @@ func (k *Kubernetes) Step(ctx context.Context, t Target, action, operation, stat
 					_, _ = services.Update(ctx, svcCopy, metav1.UpdateOptions{})
 				}
 			}
-			recordHelmReleaseSecret(ctx, k.Client, t.Deployment.Namespace, t)
 			return Result{"running", "installing", "", ""}, nil
 		}
 	}
@@ -388,9 +400,6 @@ func (k *Kubernetes) stepAppCenterDelete(ctx context.Context, t Target, operatio
 	}
 	if !servicesGone {
 		return Result{"running", "stopping", "", ""}, nil
-	}
-	if t.OCIChart != nil {
-		deleteHelmReleaseSecrets(ctx, k.Client, t.Deployment.Namespace, t.AppID)
 	}
 	return Result{"succeeded", "completed", "", ""}, nil
 }

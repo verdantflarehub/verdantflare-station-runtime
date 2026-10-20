@@ -10,12 +10,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 func buildTestChartTGZ(t *testing.T, name, chartVer, appVer, imageTag string) []byte {
@@ -24,9 +24,11 @@ func buildTestChartTGZ(t *testing.T, name, chartVer, appVer, imageTag string) []
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
 	files := map[string]string{
-		name + "/Chart.yaml": "apiVersion: v2\nname: " + name + "\nversion: " + chartVer + "\nappVersion: " + appVer + "\n",
-		name + "/values.yaml": "image:\n  repository: registry.verdantflare.ai/verdantflare/" + name + "-manager\n  tag: " + imageTag + "\n",
-		name + "/templates/deployment.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + name + "-manager\n",
+		name + "/Chart.yaml":                "apiVersion: v2\nname: " + name + "\nversion: " + chartVer + "\nappVersion: " + appVer + "\n",
+		name + "/values.yaml":               "image:\n  repository: registry.verdantflarehub.com/verdantflare/" + name + "-manager\n  tag: " + imageTag + "\n",
+		name + "/channel.yaml":              "capabilities:\n  - h3-max\n",
+		name + "/templates/deployment.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: " + name + "-manager\nspec:\n  selector:\n    matchLabels:\n      app: " + name + "\n  template:\n    metadata:\n      labels:\n        app: " + name + "\n    spec:\n      containers:\n        - name: " + name + "-manager\n          image: {{ .Values.image.repository }}:{{ .Values.image.tag }}\n          env:\n            - name: CHANNEL_METADATA_FILE\n              value: /etc/channel.yaml\n          volumeMounts:\n            - name: metadata\n              mountPath: /etc/channel.yaml\n              subPath: channel.yaml\n      volumes:\n        - name: metadata\n          configMap:\n            name: " + name + "-metadata\n",
+		name + "/templates/configmap.yaml":  "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: " + name + "-metadata\ndata:\n  channel.yaml: |\n{{ .Files.Get \"channel.yaml\" | indent 4 }}\n",
 	}
 	for filename, content := range files {
 		raw := []byte(content)
@@ -46,7 +48,7 @@ func buildTestChartTGZ(t *testing.T, name, chartVer, appVer, imageTag string) []
 	return buf.Bytes()
 }
 
-func TestOCIChartSourceResolveAndHelmSecretLifecycle(t *testing.T) {
+func TestOCIChartSourceResolveAndRender(t *testing.T) {
 	rawTGZ := buildTestChartTGZ(t, "comfyui", "0.1.0", "0.1.15", "comfyui-v0.1.15")
 	pkgSum := sha256.Sum256(rawTGZ)
 	pkgDigest := "sha256:" + hex.EncodeToString(pkgSum[:])
@@ -118,34 +120,17 @@ func TestOCIChartSourceResolveAndHelmSecretLifecycle(t *testing.T) {
 		t.Fatalf("unexpected container image: %s", gotImg)
 	}
 
-	k8sClient := fake.NewSimpleClientset()
-	recordHelmReleaseSecret(context.Background(), k8sClient, "verdantflare-app", resolved)
-	// Idempotent call with same packageDigest must not create v2
-	recordHelmReleaseSecret(context.Background(), k8sClient, "verdantflare-app", resolved)
-	secs, err := k8sClient.CoreV1().Secrets("verdantflare-app").List(context.Background(), metav1.ListOptions{LabelSelector: "owner=helm,name=comfyui"})
-	if err != nil || len(secs.Items) != 1 || secs.Items[0].Name != "sh.helm.release.v1.comfyui.v1" || secs.Items[0].Labels["status"] != "deployed" {
-		t.Fatalf("expected helm release secret v1 deployed, got %v (err=%v)", secs, err)
+	if !bytes.Equal(resolved.OCIChart.Package, rawTGZ) {
+		t.Fatal("verified Chart package bytes were not retained")
 	}
-
-	resolvedV2 := cloneTarget(resolved)
-	resolvedV2.Version = "0.1.16"
-	resolvedV2.OCIChart = &OCIChartMeta{
-		OCIRef:         resolved.OCIChart.OCIRef,
-		ChartName:      "comfyui",
-		ChartVersion:   "0.1.1",
-		AppVersion:     "0.1.16",
-		ManifestDigest: "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x11}, 32)),
-		PackageDigest:  "sha256:" + hex.EncodeToString(bytes.Repeat([]byte{0x22}, 32)),
+	resolved.InstallationID = "01a14d95-9a6a-72e0-be03-07ee6d33c97c"
+	manifest, err := renderChart(resolved, chartValues(resolved, "station-1", "org-1"), "operation-1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	recordHelmReleaseSecret(context.Background(), k8sClient, "verdantflare-app", resolvedV2)
-	secs, err = k8sClient.CoreV1().Secrets("verdantflare-app").List(context.Background(), metav1.ListOptions{LabelSelector: "owner=helm,name=comfyui"})
-	if err != nil || len(secs.Items) != 2 {
-		t.Fatalf("expected 2 helm release secrets (v1 superseded, v2 deployed), got %d (err=%v)", len(secs.Items), err)
-	}
-
-	deleteHelmReleaseSecrets(context.Background(), k8sClient, "verdantflare-app", "comfyui")
-	secs, err = k8sClient.CoreV1().Secrets("verdantflare-app").List(context.Background(), metav1.ListOptions{LabelSelector: "owner=helm,name=comfyui"})
-	if err != nil || len(secs.Items) != 0 {
-		t.Fatalf("expected helm release secrets deleted, got %d (err=%v)", len(secs.Items), err)
+	for _, fragment := range []string{"kind: ConfigMap", "h3-max", "CHANNEL_METADATA_FILE", "station.verdantflare.com/installation-id", "station.verdantflare.com/appcenter-creation-operation"} {
+		if !strings.Contains(manifest, fragment) {
+			t.Fatalf("rendered Chart omitted %q", fragment)
+		}
 	}
 }
