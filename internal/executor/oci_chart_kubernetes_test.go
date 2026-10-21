@@ -2,8 +2,10 @@ package executor
 
 import (
 	"context"
+	"helm.sh/helm/v3/pkg/release"
 	"strings"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -14,6 +16,21 @@ import (
 
 type chartLifecycleStub struct {
 	called int
+}
+
+func TestHelmRecoveryDoesNotTreatPendingOrFailedAsDeployed(t *testing.T) {
+	for _, status := range []release.Status{release.StatusPendingInstall, release.StatusPendingUpgrade, release.StatusFailed} {
+		rel := &release.Release{Name: "app-publishing", Namespace: "verdantflare-app", Info: &release.Info{Status: status}}
+		if err := requireDeployedRelease(rel, "verdantflare-app"); err == nil {
+			t.Fatalf("%s release was treated as deployed", status)
+		}
+	}
+	if err := requireDeployedRelease(&release.Release{Name: "app-publishing", Namespace: "verdantflare-app", Info: &release.Info{Status: release.StatusDeployed}}, "verdantflare-app"); err != nil {
+		t.Fatal(err)
+	}
+	if !freshHelmTransition(time.Now().Add(-time.Minute)) || freshHelmTransition(time.Now().Add(-7*time.Minute)) || freshHelmTransition(time.Time{}) {
+		t.Fatal("pending Helm transition is not bounded by its start time")
+	}
 }
 
 func (s *chartLifecycleStub) Ensure(context.Context, Target, string, string, string, string) (bool, error) {

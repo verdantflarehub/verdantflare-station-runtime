@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/chart/loader"
@@ -33,6 +34,8 @@ type ChartLifecycle interface {
 type HelmLifecycle struct {
 	Getter genericclioptions.RESTClientGetter
 }
+
+const helmPendingGrace = 6 * time.Minute
 
 func (h *HelmLifecycle) configuration(namespace string) (*action.Configuration, error) {
 	if h == nil || h.Getter == nil {
@@ -187,14 +190,15 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 	if err != nil {
 		return false, err
 	}
-	if current.Namespace != t.Deployment.Namespace || current.Info == nil {
-		return false, errors.New("Helm release is not in the bound namespace")
+	if current.Info != nil && current.Info.Status.IsPending() {
+		if releaseBoundToInstallation(current, t, station, org) && releasePackageDigest(current) == t.OCIChart.PackageDigest && current.Manifest != "" &&
+			current.Namespace == t.Deployment.Namespace && freshHelmTransition(current.Info.LastDeployed.Time) {
+			return true, nil
+		}
+		return false, fmt.Errorf("Helm release %s is stuck in %s; inspect the release before retrying", t.AppID, current.Info.Status)
 	}
-	if current.Info.Status.IsPending() && current.Manifest != "" && releaseBoundToInstallation(current, t, station, org) && releasePackageDigest(current) == t.OCIChart.PackageDigest {
-		return true, nil
-	}
-	if current.Info.Status != release.StatusDeployed {
-		return false, errors.New("Helm release is not deployed in the bound namespace")
+	if err := requireDeployedRelease(current, t.Deployment.Namespace); err != nil {
+		return false, err
 	}
 	if current.Manifest != "" {
 		if !releaseBoundToInstallation(current, t, station, org) {
@@ -234,6 +238,21 @@ func releasePackageDigest(rel *release.Release) string {
 	station, _ := rel.Config["station"].(map[string]interface{})
 	digest, _ := station["packageDigest"].(string)
 	return digest
+}
+
+func requireDeployedRelease(rel *release.Release, namespace string) error {
+	if rel == nil || rel.Namespace != namespace || rel.Info == nil {
+		return errors.New("Helm release is not in the bound namespace")
+	}
+	if rel.Info.Status != release.StatusDeployed {
+		return fmt.Errorf("Helm release %s is %s; inspect the release before retrying", rel.Name, rel.Info.Status)
+	}
+	return nil
+}
+
+func freshHelmTransition(started time.Time) bool {
+	age := time.Since(started)
+	return !started.IsZero() && age >= -10*time.Second && age < helmPendingGrace
 }
 
 func releaseBoundToInstallation(rel *release.Release, t Target, station, org string) bool {
@@ -304,8 +323,18 @@ func (h *HelmLifecycle) Uninstall(ctx context.Context, t Target, station, org st
 	if err != nil {
 		return false, err
 	}
-	if current.Namespace != t.Deployment.Namespace {
-		return false, errors.New("Helm release is not in the bound namespace")
+	if current.Info != nil && current.Info.Status == release.StatusUninstalled {
+		return false, nil
+	}
+	if current.Info != nil && current.Info.Status == release.StatusUninstalling {
+		if current.Namespace == t.Deployment.Namespace && releaseBoundToInstallation(current, t, station, org) &&
+			releasePackageDigest(current) == t.OCIChart.PackageDigest && freshHelmTransition(current.Info.Deleted.Time) {
+			return true, nil
+		}
+		return false, fmt.Errorf("Helm release %s is stuck uninstalling; inspect the release before retrying", t.AppID)
+	}
+	if err := requireDeployedRelease(current, t.Deployment.Namespace); err != nil {
+		return false, err
 	}
 	if current.Manifest == "" {
 		// The old executor recorded an empty release while creating the workload
