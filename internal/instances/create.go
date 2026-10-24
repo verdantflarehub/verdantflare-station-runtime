@@ -94,6 +94,7 @@ type Service struct {
 	StationID        string
 	Namespaces       []string
 	Profiles         map[string]HelperProfile
+	ProfileHistory   map[string]HelperProfile
 	Observer         PreparationObserver
 	WorkerObserver   WorkerObserver
 	DrainObserver    DrainObserver
@@ -142,7 +143,8 @@ func (s *Service) Create(ctx context.Context, in CreateRequest) (CreateProgress,
 	if err != nil {
 		return out, err
 	}
-	if !bytes.Equal(priorHash, hash[:]) || !bytes.Equal(profileHash, p.Hash[:]) {
+	p, exists = s.pinnedProfile(in.ProfileID, profileHash)
+	if !exists || !in.valid(p) || !bytes.Equal(priorHash, hash[:]) {
 		return CreateProgress{}, ErrConflict
 	}
 	var state createState

@@ -3,6 +3,7 @@ package instances
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"os"
@@ -19,7 +20,13 @@ type profileConfig struct {
 	MaxFileBytes int64    `json:"max_file_bytes"`
 }
 
-func LoadProfiles(path string) (map[string]HelperProfile, error) {
+func LoadProfiles(path string) (map[string]HelperProfile, error) { return loadProfiles(path, false) }
+
+func LoadProfileHistory(path string) (map[string]HelperProfile, error) {
+	return loadProfiles(path, true)
+}
+
+func loadProfiles(path string, historical bool) (map[string]HelperProfile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -43,10 +50,26 @@ func LoadProfiles(path string) (map[string]HelperProfile, error) {
 		if !p.StorageProfile.valid() || !imageVersion.MatchString(p.Image) || p.MaxFileBytes < 1 || p.MaxFileBytes > p.Bytes {
 			return nil, ErrInvalid
 		}
-		if _, exists := out[p.ID]; exists {
+		key := p.ID
+		if historical {
+			key = hex.EncodeToString(p.Hash[:])
+		}
+		if _, exists := out[key]; exists {
 			return nil, ErrInvalid
 		}
-		out[p.ID] = p
+		out[key] = p
 	}
 	return out, nil
+}
+
+// The hash comes only from an existing durable execution, never from caller input.
+func (s *Service) pinnedProfile(id string, hash []byte) (HelperProfile, bool) {
+	if len(hash) != sha256.Size {
+		return HelperProfile{}, false
+	}
+	if p, ok := s.Profiles[id]; ok && bytes.Equal(hash, p.Hash[:]) {
+		return p, true
+	}
+	p, ok := s.ProfileHistory[hex.EncodeToString(hash)]
+	return p, ok && p.ID == id && bytes.Equal(hash, p.Hash[:])
 }

@@ -175,6 +175,14 @@ func run() int {
 			return 1
 		}
 	}
+	var profileHistory map[string]instances.HelperProfile
+	if path := os.Getenv("STATION_INSTANCE_HISTORY_REGISTRY"); path != "" {
+		profileHistory, err = instances.LoadProfileHistory(path)
+		if err != nil {
+			logger.Error("invalid_instance_history_configuration")
+			return 1
+		}
+	}
 	var appProfiles map[string]appinstances.Profile
 	var appCallers appinstances.AccessRegistry
 	appProfilePath, appAccessPath := os.Getenv("STATION_APP_INSTANCE_PROFILES"), os.Getenv("STATION_APP_INSTANCE_ACCESS_REGISTRY")
@@ -338,7 +346,7 @@ func run() int {
 			workspaceNamespaces = append(workspaceNamespaces, p.Namespace)
 		}
 		workspaceNamespaces = append(workspaceNamespaces, "verdantflare-app")
-		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Namespaces: workspaceNamespaces, Profiles: profiles, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
+		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Namespaces: workspaceNamespaces, Profiles: profiles, ProfileHistory: profileHistory, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
 		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- instanceServer.ListenAndServe() }()
 	}

@@ -95,7 +95,7 @@ func (s *Service) Destroy(ctx context.Context, in DestroyRequest) (DestroyProgre
 		}
 	}
 	create := state.Create
-	p, ok := s.Profiles[create.ProfileID]
+	p, ok := s.pinnedProfile(create.ProfileID, profileHash)
 	if !ok || !bytes.Equal(profileHash, p.Hash[:]) || state.SecretUID == "" || create.StationID != in.StationID || create.OrganizationID != in.OrganizationID || create.ProjectID != in.ProjectID || create.InstanceID != in.InstanceID {
 		return out, ErrBinding
 	}

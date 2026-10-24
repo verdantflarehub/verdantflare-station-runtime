@@ -91,7 +91,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	if err != nil && !newOperation {
 		return out, err
 	}
-	if !newOperation && (!bytes.Equal(requestHash, hash[:]) || !bytes.Equal(profileHash, p.Hash[:])) {
+	if !newOperation && !bytes.Equal(requestHash, hash[:]) {
 		return out, ErrConflict
 	}
 	var creationInput, creationState, creationHash []byte
@@ -102,6 +102,10 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	}
 	if err != nil {
 		return out, err
+	}
+	p, ok = s.pinnedProfile(in.ProfileID, creationHash)
+	if !ok || !in.valid(p) || (!newOperation && !bytes.Equal(profileHash, p.Hash[:])) {
+		return out, ErrBinding
 	}
 	var created CreateRequest
 	var prepared createState

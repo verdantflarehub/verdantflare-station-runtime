@@ -76,7 +76,7 @@ func (s *Service) Access(ctx context.Context, in AccessRequest) (WorkerAccess, e
 		state.SecretUID == "" || state.Proof == nil || state.Worker.PodUID == "" || state.Worker.ServiceUID == "" {
 		return out, ErrBinding
 	}
-	p, ok := s.Profiles[request.ProfileID]
+	p, ok := s.pinnedProfile(request.ProfileID, profileHash)
 	if !ok || !bytes.Equal(profileHash, p.Hash[:]) {
 		return out, ErrBinding
 	}

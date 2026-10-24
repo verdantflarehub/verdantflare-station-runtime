@@ -134,7 +134,7 @@ func (s *Service) Stop(ctx context.Context, in StopRequest) (StopProgress, error
 		}
 	}
 	start := state.Start
-	p, ok := s.Profiles[start.ProfileID]
+	p, ok := s.pinnedProfile(start.ProfileID, profileHash)
 	if !ok || !bytes.Equal(profileHash, p.Hash[:]) || in.Size > p.MaxFileBytes || start.OperationID != in.StartOperationID ||
 		start.StationID != in.StationID || start.OrganizationID != in.OrganizationID || start.ProjectID != in.ProjectID || start.InstanceID != in.InstanceID ||
 		state.Execution.Proof == nil || state.Execution.Proof.Generation != in.Generation || state.Execution.SecretUID == "" ||
