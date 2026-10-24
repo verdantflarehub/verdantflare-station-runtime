@@ -18,6 +18,7 @@ PostgreSQL integration tests use `STATION_TEST_DATABASE_URL` (must permit dispos
 - `STATION_RUNTIME_REGISTRY`: JSON file containing `manifest_file` and `namespace` registrations; manifest and template paths resolve beneath the root.
 - `STATION_RUNTIME_ADDR`: internal gRPC listener, default `127.0.0.1:5052`.
 - `STATION_RUNTIME_PROBE_ADDR`: `/healthz`, `/readyz`, default `127.0.0.1:5053`.
+- `STATION_INSTANCE_CAPACITY_REGISTRY`: optional operator JSON file with additional empty PVC names pinned to exact registered execution profile hashes. See the central Runtime design §4.5; retain each entry while a workspace uses it. Existing profiles, requests and bindings are unchanged.
 - `STATION_KUBECONFIG`, `STATION_KUBE_CONTEXT`: optional explicit local cluster configuration; otherwise use the in-cluster service account.
 
 Core dispatch is enabled with `STATION_RUNTIME_TARGET=station-runtime:5052`. Run only on the trusted internal Station network. Central deployment manifests own namespace/RBAC/template mounts; this repository does not provide an alternate deployment source.
@@ -35,7 +36,7 @@ Required repository or organization Actions secrets:
 - `REGISTRY_PASSWORD_ALIYUN`: registry password.
 
 The configured release image is
-`<registry>/wod/verdantflare-station:station-runtime-v0.2.2`.
+`<registry>/wod/verdantflare-station:station-runtime-v0.2.72`.
 Increment `IMAGE_VERSION` for subsequent releases. The preflight refuses existing
 tags and stops on registry/authentication errors; it does not publish moving SHA,
 branch or latest tags.

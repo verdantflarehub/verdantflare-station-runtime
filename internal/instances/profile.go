@@ -68,8 +68,11 @@ func (s *Service) pinnedProfile(id string, hash []byte) (HelperProfile, bool) {
 		return HelperProfile{}, false
 	}
 	if p, ok := s.Profiles[id]; ok && bytes.Equal(hash, p.Hash[:]) {
-		return p, true
+		return s.withCapacity(p), true
 	}
 	p, ok := s.ProfileHistory[hex.EncodeToString(hash)]
-	return p, ok && p.ID == id && bytes.Equal(hash, p.Hash[:])
+	if !ok || p.ID != id || !bytes.Equal(hash, p.Hash[:]) {
+		return HelperProfile{}, false
+	}
+	return s.withCapacity(p), true
 }

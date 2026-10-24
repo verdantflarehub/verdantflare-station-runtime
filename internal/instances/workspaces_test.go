@@ -58,10 +58,19 @@ func TestWorkspaceHTTPValidationAndRouting(t *testing.T) {
 func TestWorkspacesAndReleaseRetainedVolume(t *testing.T) {
 	s, in, start, client := destroyFixture(t, true)
 	ctx := context.Background()
-	for range 3 {
-		if _, err := s.Destroy(ctx, in); err != nil {
+	destroyed := false
+	for range 8 {
+		out, err := s.Destroy(ctx, in)
+		if err != nil {
 			t.Fatal(err)
 		}
+		if out.Status == "succeeded" && out.Phase == "deleted" {
+			destroyed = true
+			break
+		}
+	}
+	if !destroyed {
+		t.Fatal("destroy did not reach its retained-workspace terminal state")
 	}
 	cleaned := false
 	s.WorkspaceCleaner = func(ctx context.Context, namespace, pvcName, nodeName string) error {

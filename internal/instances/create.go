@@ -95,6 +95,7 @@ type Service struct {
 	Namespaces          []string
 	Profiles            map[string]HelperProfile
 	ProfileHistory      map[string]HelperProfile
+	CapacityClaims      CapacityClaims
 	Observer            PreparationObserver
 	WorkingCopyObserver WorkingCopyObserver
 	WorkerObserver      WorkerObserver
