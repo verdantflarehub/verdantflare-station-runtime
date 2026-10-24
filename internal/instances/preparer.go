@@ -43,7 +43,7 @@ var imageVersion = regexp.MustCompile(`^[^\s@]+:(?:[a-z0-9][a-z0-9._-]*-)?v?[0-9
 
 func instanceName(in Identity) string { return "blender-" + strings.ReplaceAll(in.InstanceID, "-", "") }
 
-func helperObjects(in Identity, p HelperProfile, b VolumeBinding) (*corev1.Pod, *corev1.Service, error) {
+func helperObjects(in Identity, p HelperProfile, b VolumeBinding, readOnly ...bool) (*corev1.Pod, *corev1.Service, error) {
 	pod, svc, err := legacyHelperObjects(in, p, b)
 	if err != nil {
 		return nil, nil, err
@@ -51,6 +51,18 @@ func helperObjects(in Identity, p HelperProfile, b VolumeBinding) (*corev1.Pod, 
 	pod = pod.DeepCopy()
 	pod.Spec.Containers[0].Resources = corev1.ResourceRequirements{}
 	pod.Annotations[preparerTemplateKey] = "blender-preparer-v2"
+	if len(readOnly) > 0 && readOnly[0] {
+		pod.Name += "-recover"
+		svc.Name += "-recover"
+		pod.Labels[componentKey] = "blender-recovery-reader"
+		svc.Labels[componentKey] = "blender-recovery-reader"
+		svc.Spec.Selector[componentKey] = "blender-recovery-reader"
+		pod.Spec.Volumes[0].PersistentVolumeClaim.ReadOnly = true
+		pod.Spec.Containers[0].VolumeMounts[0].ReadOnly = true
+		pod.Spec.Containers[0].Resources = legacyHelperResources()
+		pod.Annotations[preparerTemplateKey] = "blender-recovery-reader-v1"
+	}
+
 	setPodSpecHash(pod, helperHashKey)
 	return pod, svc, nil
 }
@@ -172,8 +184,8 @@ func helperServiceMatches(actual, desired *corev1.Service, uid string) bool {
 // EnsureHelper is invoked only after Reserve and Claim have succeeded. Missing
 // objects with previously observed UIDs are a conflict, never silently recreated.
 // Readiness means the file agent is reachable, not that the project is prepared.
-func EnsureHelper(ctx context.Context, client kubernetes.Interface, in Identity, p HelperProfile, b VolumeBinding, expected HelperObservation) (HelperObservation, error) {
-	pod, wantedService, err := helperObjects(in, p, b)
+func EnsureHelper(ctx context.Context, client kubernetes.Interface, in Identity, p HelperProfile, b VolumeBinding, expected HelperObservation, readOnly ...bool) (HelperObservation, error) {
+	pod, wantedService, err := helperObjects(in, p, b, readOnly...)
 	if err != nil {
 		return HelperObservation{}, err
 	}
@@ -255,8 +267,8 @@ func EnsureHelper(ctx context.Context, client kubernetes.Interface, in Identity,
 
 // RemoveHelper is UID-fenced and never deletes the data volume or its Secret.
 // true proves both endpoints are absent and no remaining Pod mounts this PVC.
-func RemoveHelper(ctx context.Context, client kubernetes.Interface, in Identity, p HelperProfile, b VolumeBinding, expected HelperObservation) (bool, error) {
-	pod, svc, err := helperObjects(in, p, b)
+func RemoveHelper(ctx context.Context, client kubernetes.Interface, in Identity, p HelperProfile, b VolumeBinding, expected HelperObservation, readOnly ...bool) (bool, error) {
+	pod, svc, err := helperObjects(in, p, b, readOnly...)
 	if err != nil {
 		return false, err
 	}

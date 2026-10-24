@@ -20,8 +20,15 @@ func prepareWorkerRecovery(ctx context.Context, client kubernetes.Interface, nex
 	var execution startState
 	if json.Unmarshal(input, &previous) != nil || json.Unmarshal(state, &execution) != nil ||
 		previous.identity() != next.identity() || previous.ProfileID != next.ProfileID ||
-		previous.OperationID == next.OperationID || previous.source() != next.source() ||
+		previous.OperationID == next.OperationID ||
 		execution.Proof == nil || execution.Worker.PodUID == "" || execution.Recovery != nil {
+		return nil, ErrBinding
+	}
+	previous, err := effectiveStart(previous, execution, p)
+	if err != nil {
+		return nil, err
+	}
+	if previous.source() != next.source() {
 		return nil, ErrBinding
 	}
 	desired, _, err := workerObjects(previous.identity(), p, b, previous.OperationID, previous.source())

@@ -46,20 +46,22 @@ func (r StartRequest) valid(p HelperProfile) bool {
 }
 
 type startState struct {
-	SecretUID string            `json:"secret_uid"`
-	Worker    WorkerObservation `json:"worker"`
-	Proof     *RunningProof     `json:"proof,omitempty"`
-	Recovery  *workerRecovery   `json:"recovery,omitempty"`
+	SecretUID     string               `json:"secret_uid"`
+	Worker        WorkerObservation    `json:"worker"`
+	Proof         *RunningProof        `json:"proof,omitempty"`
+	Recovery      *workerRecovery      `json:"recovery,omitempty"`
+	SavedRecovery *savedSourceRecovery `json:"saved_recovery,omitempty"`
 }
 
 type StartProgress struct {
-	OperationID string             `json:"operation_id"`
-	InstanceID  string             `json:"instance_id"`
-	Status      string             `json:"status"`
-	Phase       string             `json:"phase"`
-	Workspace   *VolumeBinding     `json:"workspace,omitempty"`
-	Worker      *WorkerObservation `json:"worker,omitempty"`
-	Proof       *RunningProof      `json:"proof,omitempty"`
+	SourceRecovery *SourceRecoveryProof `json:"source_recovery,omitempty"`
+	OperationID    string               `json:"operation_id"`
+	InstanceID     string               `json:"instance_id"`
+	Status         string               `json:"status"`
+	Phase          string               `json:"phase"`
+	Workspace      *VolumeBinding       `json:"workspace,omitempty"`
+	Worker         *WorkerObservation   `json:"worker,omitempty"`
+	Proof          *RunningProof        `json:"proof,omitempty"`
 }
 
 // Start is advanced only by the currently authorized application actor. Each
@@ -167,10 +169,11 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		out.Worker = &state.Worker
 	}
 	out.Proof = state.Proof
+	out.SourceRecovery = state.sourceRecoveryProof()
 	if out.Status != "running" {
 		return out, tx.Commit(ctx)
 	}
-	if out.Phase != "accepted" && out.Phase != "launching" && out.Phase != "loading" {
+	if out.Phase != "accepted" && out.Phase != "launching" && out.Phase != "loading" && out.Phase != "recovering" {
 		return out, ErrBinding
 	}
 	// Serialize capacity observations and new Pod requests across instances on
@@ -201,7 +204,53 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		// replacement Pod with an unrelated workspace user on recovery replay.
 		return out, tx.Commit(ctx)
 	}
-	state.Worker, err = EnsureWorker(ctx, s.Client, in.identity(), p, binding, in.OperationID, state.SecretUID, in.source(), state.Worker)
+	if state.SavedRecovery != nil && state.SavedRecovery.Stage != "ready" {
+		if err = s.advanceSavedRecovery(ctx, in, created, p, binding, &state); err != nil {
+			return out, err
+		}
+		out.Phase, out.Worker, out.Proof = "recovering", nil, nil
+		out.SourceRecovery = state.sourceRecoveryProof()
+		stateRaw, _ = json.Marshal(state)
+		_, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET phase=$2,state=$3,error_code='',updated_at=now() WHERE operation_id=$1`, in.OperationID, out.Phase, stateRaw)
+		if err != nil {
+			return out, err
+		}
+		return out, tx.Commit(ctx)
+	}
+	effective, err := effectiveStart(in, state, p)
+	if err != nil {
+		return out, err
+	}
+	state.Worker, err = EnsureWorker(ctx, s.Client, in.identity(), p, binding, in.OperationID, state.SecretUID, effective.source(), state.Worker)
+	if errors.Is(err, ErrWorkerExited) && state.SavedRecovery == nil && state.Proof == nil && state.Worker.PodUID != "" {
+		// Older in-flight recovery operations did not persist a saved-copy flag.
+		// Prove their origin from the preceding successful execution, not from an
+		// arbitrary caller field or a caller-supplied replacement digest.
+		var priorInput, priorState []byte
+		var priorAction, priorStatus, priorPhase string
+		err = tx.QueryRow(ctx, `SELECT action,status,phase,input,state FROM station.runtime_instance_executions WHERE instance_id=$1 AND created_at < (SELECT created_at FROM station.runtime_instance_executions WHERE operation_id=$2) AND action<>'create' ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID, in.OperationID).Scan(&priorAction, &priorStatus, &priorPhase, &priorInput, &priorState)
+		if err != nil {
+			return out, err
+		}
+		if priorAction != "start" || priorStatus != "succeeded" || priorPhase != "running" {
+			return out, ErrBinding
+		}
+		if err = validateRecoveryOrigin(in, p, priorInput, priorState); err != nil {
+			return out, err
+		}
+		if err = verifyCurrentTerminal(ctx, s.Client, in, p, binding, state.Worker, false); err != nil {
+			return out, err
+		}
+		state.SavedRecovery = &savedSourceRecovery{Stage: "removing_worker", PreviousWorker: state.Worker}
+		out.Phase, out.Worker, out.Proof = "recovering", nil, nil
+		out.SourceRecovery = state.sourceRecoveryProof()
+		stateRaw, _ = json.Marshal(state)
+		_, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET phase=$2,state=$3,error_code='',updated_at=now() WHERE operation_id=$1`, in.OperationID, out.Phase, stateRaw)
+		if err != nil {
+			return out, err
+		}
+		return out, tx.Commit(ctx)
+	}
 	if err != nil {
 		code := "OPERATION_OUTCOME_UNKNOWN"
 		switch {
@@ -229,7 +278,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		if s.WorkerObserver == nil {
 			return StartProgress{}, ErrBinding
 		}
-		state.Proof, err = s.WorkerObserver.ObserveWorker(ctx, in.identity(), in.OperationID, in.source(), state.Worker, string(secret.Data["worker-token"]))
+		state.Proof, err = s.WorkerObserver.ObserveWorker(ctx, in.identity(), in.OperationID, effective.source(), state.Worker, string(secret.Data["worker-token"]))
 		if err != nil {
 			return StartProgress{}, &ExecutionError{Code: "WORKER_LOAD_UNVERIFIED"}
 		}

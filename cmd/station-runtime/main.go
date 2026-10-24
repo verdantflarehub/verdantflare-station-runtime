@@ -346,7 +346,7 @@ func run() int {
 			workspaceNamespaces = append(workspaceNamespaces, p.Namespace)
 		}
 		workspaceNamespaces = append(workspaceNamespaces, "verdantflare-app")
-		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Namespaces: workspaceNamespaces, Profiles: profiles, ProfileHistory: profileHistory, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
+		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Namespaces: workspaceNamespaces, Profiles: profiles, ProfileHistory: profileHistory, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkingCopyObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
 		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- instanceServer.ListenAndServe() }()
 	}
