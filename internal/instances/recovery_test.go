@@ -64,3 +64,27 @@ func TestWorkerRecoveryRequiresExactFailedBindingAndSource(t *testing.T) {
 		t.Fatal("new attempt could not start", err)
 	}
 }
+
+func TestRecoveryAcceptsSucceededButRejectsLiveOrUnknownWorker(t *testing.T) {
+	in, p, b, client, secret := workerFixture(t)
+	ctx := context.Background()
+	start := StartRequest{OperationID: uuid.NewString(), CreateOperationID: in.CreateOperationID, StationID: in.StationID, OrganizationID: in.OrganizationID, ProjectID: in.ProjectID, InstanceID: in.InstanceID, ProfileID: p.ID, SourceRevisionID: uuid.NewString(), Empty: true}
+	obs, err := EnsureWorker(ctx, client, in, p, b, start.OperationID, secret, start.source(), WorkerObservation{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := start
+	next.OperationID = uuid.NewString()
+	raw, _ := json.Marshal(start)
+	state, _ := json.Marshal(startState{Worker: obs, Proof: &RunningProof{}})
+	pod, _ := client.CoreV1().Pods(p.Namespace).Get(ctx, obs.PodName, metav1.GetOptions{})
+	pod.Spec.NodeName = p.NodeName
+	for _, phase := range []corev1.PodPhase{corev1.PodPending, corev1.PodRunning, corev1.PodUnknown, corev1.PodSucceeded} {
+		pod.Status.Phase = phase
+		_, _ = client.CoreV1().Pods(p.Namespace).Update(ctx, pod, metav1.UpdateOptions{})
+		_, err := prepareWorkerRecovery(ctx, client, next, p, b, raw, state)
+		if (err == nil) != (phase == corev1.PodSucceeded) {
+			t.Fatalf("phase %s: %v", phase, err)
+		}
+	}
+}

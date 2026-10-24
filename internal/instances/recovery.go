@@ -64,7 +64,7 @@ func verifyFailedWorker(ctx context.Context, client kubernetes.Interface, p Help
 		return err
 	}
 	if string(pod.UID) != recovery.Worker.PodUID || pod.Spec.NodeName != p.NodeName ||
-		pod.Status.Phase != corev1.PodFailed {
+		(pod.Status.Phase != corev1.PodFailed && pod.Status.Phase != corev1.PodSucceeded) {
 		return ErrBinding
 	}
 	return nil
