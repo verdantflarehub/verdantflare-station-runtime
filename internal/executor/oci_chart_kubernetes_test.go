@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"helm.sh/helm/v3/pkg/release"
 	"strings"
 	"testing"
@@ -15,7 +16,8 @@ import (
 )
 
 type chartLifecycleStub struct {
-	called int
+	called  int
+	failure error
 }
 
 func TestHelmRecoveryDoesNotTreatPendingOrFailedAsDeployed(t *testing.T) {
@@ -35,12 +37,12 @@ func TestHelmRecoveryDoesNotTreatPendingOrFailedAsDeployed(t *testing.T) {
 
 func (s *chartLifecycleStub) Ensure(context.Context, Target, string, string, string, string) (bool, error) {
 	s.called++
-	return true, nil
+	return s.failure == nil, s.failure
 }
 
 func (s *chartLifecycleStub) Uninstall(context.Context, Target, string, string) (bool, error) {
 	s.called++
-	return true, nil
+	return s.failure == nil, s.failure
 }
 
 func TestOCIInstallUsesHelmWithoutCreatingPartialWorkload(t *testing.T) {
@@ -67,6 +69,15 @@ func TestOCIInstallUsesHelmWithoutCreatingPartialWorkload(t *testing.T) {
 		t.Fatalf("legacy Deployment fallback created a partial workload: %v", err)
 	}
 
+	helm.failure = errors.New("Chart PVC has no Helm keep policy")
+	result, err = k.Step(ctx, target, "install", "operation-1", "station-1", "org-1")
+	if err != nil || result.Status != "failed" || result.Code != "SERVICE_UNAVAILABLE" || !strings.Contains(result.Message, "keep policy") {
+		t.Fatalf("Helm failure must use a persistable lifecycle error: %+v %v", result, err)
+	}
+	result, err = k.stepOCIChartDelete(ctx, target, "station-1", "org-1")
+	if err != nil || result.Status != "failed" || result.Code != "SERVICE_UNAVAILABLE" {
+		t.Fatalf("Helm uninstall failure must use a persistable lifecycle error: %+v %v", result, err)
+	}
 	k.Charts = nil
 	result, err = k.Step(ctx, target, "install", "operation-1", "station-1", "org-1")
 	if err != nil || result.Status != "failed" || result.Code != "SERVICE_UNAVAILABLE" {

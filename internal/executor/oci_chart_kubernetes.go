@@ -44,7 +44,7 @@ func (k *Kubernetes) stepOCIChart(ctx context.Context, t Target, action, operati
 		if ctx.Err() != nil {
 			return Result{}, err
 		}
-		return failed("CHART_EXECUTION_FAILED", "Helm execution failed: "+err.Error()), nil
+		return failed("SERVICE_UNAVAILABLE", "Helm execution failed: "+err.Error()), nil
 	}
 	if changed {
 		return Result{"running", "installing", "", ""}, nil
@@ -96,7 +96,7 @@ func (k *Kubernetes) stepOCIChartDelete(ctx context.Context, t Target, station, 
 		if ctx.Err() != nil {
 			return Result{}, err
 		}
-		return failed("CHART_EXECUTION_FAILED", "Helm uninstall failed: "+err.Error()), nil
+		return failed("SERVICE_UNAVAILABLE", "Helm uninstall failed: "+err.Error()), nil
 	}
 	if changed {
 		return Result{"running", "stopping", "", ""}, nil
