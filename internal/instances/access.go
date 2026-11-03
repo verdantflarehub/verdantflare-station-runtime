@@ -99,16 +99,7 @@ func (s *Service) Access(ctx context.Context, in AccessRequest) (WorkerAccess, e
 	if err != nil {
 		return out, err
 	}
-	if !workerPodMatches(pod, desired, state.Worker.PodUID) || pod.DeletionTimestamp != nil || pod.Spec.NodeName != p.NodeName || pod.Status.Phase != corev1.PodRunning {
-		return out, ErrBinding
-	}
-	ready := false
-	for _, c := range pod.Status.Conditions {
-		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
-			ready = true
-		}
-	}
-	if !ready {
+	if !workerPodMatches(pod, desired, state.Worker.PodUID) || pod.Spec.NodeName != p.NodeName {
 		return out, ErrBinding
 	}
 	svc, err := s.Client.CoreV1().Services(p.Namespace).Get(ctx, desiredService.Name, metav1.GetOptions{})
@@ -129,6 +120,21 @@ func (s *Service) Access(ctx context.Context, in AccessRequest) (WorkerAccess, e
 		if claim.Annotations[k] != v {
 			return out, ErrBinding
 		}
+	}
+	// Report lifecycle only after the fixed execution and workspace have been
+	// verified. A terminal Pod must never hide a foreign/replaced resource, and
+	// unavailable workers must never cause credential reads or recovery here.
+	if pod.DeletionTimestamp == nil && (pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded) {
+		return out, &ExecutionError{Code: "WORKER_EXITED"}
+	}
+	ready := false
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {
+			ready = true
+		}
+	}
+	if pod.DeletionTimestamp != nil || pod.Status.Phase != corev1.PodRunning || !ready {
+		return out, &ExecutionError{Code: "WORKER_LOAD_UNVERIFIED"}
 	}
 	secret, err := credential(ctx, s.Client, request.identity(), p.Namespace, state.SecretUID, false)
 	if err != nil {
