@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metameta "k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"sigs.k8s.io/yaml"
@@ -204,7 +206,7 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 		if !releaseBoundToInstallation(current, t, station, org) {
 			return false, errors.New("Helm release installation identity differs")
 		}
-		if releasePackageDigest(current) == t.OCIChart.PackageDigest {
+		if sameReleaseTarget(current, t.OCIChart.PackageDigest, vals) {
 			present, err := releaseResourcesPresent(cfg, current)
 			if err != nil {
 				return false, err
@@ -214,8 +216,11 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 			}
 		}
 	}
-	if actionName == "install" && current.Manifest != "" {
+	if actionName == "install" && current.Manifest != "" && releasePackageDigest(current) != t.OCIChart.PackageDigest {
 		return false, errors.New("existing Helm release has a different package")
+	}
+	if actionName == "install" && current.Manifest != "" && !reflect.DeepEqual(current.Config, vals) {
+		return false, errors.New("existing Helm release has different installation values")
 	}
 	upgrade := action.NewUpgrade(cfg)
 	upgrade.Namespace = t.Deployment.Namespace
@@ -238,6 +243,10 @@ func releasePackageDigest(rel *release.Release) string {
 	station, _ := rel.Config["station"].(map[string]interface{})
 	digest, _ := station["packageDigest"].(string)
 	return digest
+}
+
+func sameReleaseTarget(rel *release.Release, digest string, values map[string]interface{}) bool {
+	return releasePackageDigest(rel) == digest && reflect.DeepEqual(rel.Config, values)
 }
 
 func requireDeployedRelease(rel *release.Release, namespace string) error {
@@ -264,18 +273,118 @@ func releaseBoundToInstallation(rel *release.Release, t Target, station, org str
 }
 
 func releaseResourcesPresent(cfg *action.Configuration, rel *release.Release) (bool, error) {
+	if rel == nil || rel.Name == "" || rel.Namespace == "" {
+		return false, errors.New("Helm release identity is incomplete")
+	}
 	resources, err := cfg.KubeClient.Build(strings.NewReader(rel.Manifest), false)
 	if err != nil {
 		return false, err
 	}
 	for _, info := range resources {
+		if info.Object == nil {
+			return false, errors.New("Helm manifest resource is empty")
+		}
+		expected := info.Object.DeepCopyObject()
 		if err := info.Get(); apierrors.IsNotFound(err) {
 			return false, nil
 		} else if err != nil {
 			return false, err
 		}
+		kind := info.Mapping.GroupVersionKind.Kind
+		matches, err := releaseResourceMatches(expected, info.Object, rel, kind)
+		if err != nil {
+			return false, err
+		}
+		if !matches {
+			return false, fmt.Errorf("Helm resource %s/%s has controlled field drift", kind, info.Name)
+		}
 	}
 	return true, nil
+}
+
+func releaseResourceMatches(expected, live runtime.Object, rel *release.Release, kind string) (bool, error) {
+	want, err := runtime.DefaultUnstructuredConverter.ToUnstructured(expected)
+	if err != nil {
+		return false, err
+	}
+	have, err := runtime.DefaultUnstructuredConverter.ToUnstructured(live)
+	if err != nil {
+		return false, err
+	}
+	wantMeta, _ := want["metadata"].(map[string]interface{})
+	haveMeta, _ := have["metadata"].(map[string]interface{})
+	annotations, _ := haveMeta["annotations"].(map[string]interface{})
+	labels, _ := haveMeta["labels"].(map[string]interface{})
+	if annotations["meta.helm.sh/release-name"] != rel.Name || annotations["meta.helm.sh/release-namespace"] != rel.Namespace || labels["app.kubernetes.io/managed-by"] != "Helm" {
+		return false, errors.New("Helm resource ownership differs from release")
+	}
+	for _, field := range []string{"labels", "annotations"} {
+		if specified, ok := wantMeta[field]; ok && !specifiedFieldsEqual(specified, haveMeta[field]) {
+			return false, nil
+		}
+	}
+	switch kind {
+	case "Deployment", "Service", "NetworkPolicy":
+		return specifiedFieldsEqual(want["spec"], have["spec"]), nil
+	case "ConfigMap":
+		for _, field := range []string{"data", "binaryData", "immutable"} {
+			if specified, ok := want[field]; ok && !specifiedFieldsEqual(specified, have[field]) {
+				return false, nil
+			}
+		}
+		return true, nil
+	case "PersistentVolumeClaim":
+		return annotations["helm.sh/resource-policy"] == "keep", nil
+	default:
+		return false, errors.New("Helm resource kind is unsupported during drift check")
+	}
+}
+
+func specifiedFieldsEqual(want, have interface{}) bool {
+	switch expected := want.(type) {
+	case map[string]interface{}:
+		actual, ok := have.(map[string]interface{})
+		if !ok {
+			return false
+		}
+		for key, value := range expected {
+			if !specifiedFieldsEqual(value, actual[key]) {
+				return false
+			}
+		}
+		return true
+	case []interface{}:
+		actual, ok := have.([]interface{})
+		if !ok {
+			return false
+		}
+		for i, value := range expected {
+			match := -1
+			if named, ok := value.(map[string]interface{}); ok {
+				if name, ok := named["name"].(string); ok {
+					for j, candidate := range actual {
+						item, _ := candidate.(map[string]interface{})
+						if item["name"] == name {
+							match = j
+							break
+						}
+					}
+				}
+			}
+			if match < 0 {
+				if i >= len(actual) {
+					return false
+				}
+				match = i
+			}
+			if !specifiedFieldsEqual(value, actual[match]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return reflect.DeepEqual(want, have)
+	}
 }
 
 func verifyLegacyAdoption(ctx context.Context, cfg *action.Configuration, manifest string, t Target, station, org string) error {
