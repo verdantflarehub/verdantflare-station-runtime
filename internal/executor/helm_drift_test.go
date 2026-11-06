@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/kube"
 	"helm.sh/helm/v3/pkg/release"
 	appsv1 "k8s.io/api/apps/v1"
@@ -118,5 +119,45 @@ func TestSamePackageDifferentValuesAreNotNoop(t *testing.T) {
 	}
 	if sameReleaseTarget(rel, "sha256:abc", newValues) {
 		t.Fatal("same package with different target values was accepted as no-op")
+	}
+}
+
+func TestUpgradePreservesVerifiedSiteValuesWithoutOldVersion(t *testing.T) {
+	old := &chart.Chart{Values: map[string]interface{}{
+		"services": map[string]interface{}{"endpoint": "default"},
+		"storage":  map[string]interface{}{"create": false},
+	}}
+	next := &chart.Chart{Values: map[string]interface{}{
+		"services": map[string]interface{}{"endpoint": "default"},
+		"storage":  map[string]interface{}{"create": false},
+	}}
+	current := &release.Release{Chart: old, Config: map[string]interface{}{
+		"appVersion": "0.17.62", "image": map[string]interface{}{"tag": "old"},
+		"station":  map[string]interface{}{"templateHash": "old"},
+		"services": map[string]interface{}{"endpoint": "site"},
+		"storage":  map[string]interface{}{"create": true},
+	}}
+	target := map[string]interface{}{
+		"appVersion": "0.17.63", "station": map[string]interface{}{"templateHash": "new"},
+	}
+	if err := preserveUpgradeSiteValues(current, next, target); err != nil {
+		t.Fatal(err)
+	}
+	if target["appVersion"] != "0.17.63" || target["station"].(map[string]interface{})["templateHash"] != "new" {
+		t.Fatal("old release version or identity replaced the verified target")
+	}
+	if _, exists := target["image"]; exists {
+		t.Fatal("old image override must not pin the new Chart to an old image")
+	}
+	if target["services"].(map[string]interface{})["endpoint"] != "site" || target["storage"].(map[string]interface{})["create"] != true {
+		t.Fatal("site configuration was not retained")
+	}
+	target["services"].(map[string]interface{})["endpoint"] = "changed"
+	if current.Config["services"].(map[string]interface{})["endpoint"] != "site" {
+		t.Fatal("target mutation changed the stored release")
+	}
+	next.Values["storage"] = map[string]interface{}{"create": true}
+	if err := preserveUpgradeSiteValues(current, next, map[string]interface{}{}); err == nil || !strings.Contains(err.Error(), "storage changed") {
+		t.Fatalf("changed Chart default should stop upgrade: %v", err)
 	}
 }

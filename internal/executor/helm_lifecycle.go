@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"helm.sh/helm/v3/pkg/action"
+	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chart/loader"
 	"helm.sh/helm/v3/pkg/postrender"
 	"helm.sh/helm/v3/pkg/release"
@@ -64,6 +65,39 @@ func chartValues(t Target, station, org string) map[string]interface{} {
 			"packageDigest":  t.OCIChart.PackageDigest,
 		},
 	}
+}
+
+// Keep only explicit site configuration that the previous release can prove
+// has the same default in the target Chart. Version and identity values always
+// come from the verified target rather than an earlier release.
+func preserveUpgradeSiteValues(current *release.Release, next *chart.Chart, values map[string]interface{}) error {
+	if current == nil || current.Config == nil {
+		return nil
+	}
+	for _, key := range []string{"replicas", "services", "channelDiscovery", "gpuTask", "storage", "persistence", "pvcs"} {
+		override, exists := current.Config[key]
+		if !exists {
+			continue
+		}
+		if current.Chart == nil || next == nil {
+			return fmt.Errorf("cannot verify existing %s environment values", key)
+		}
+		oldDefault, oldExists := current.Chart.Values[key]
+		newDefault, newExists := next.Values[key]
+		if !oldExists || !newExists || !reflect.DeepEqual(oldDefault, newDefault) {
+			return fmt.Errorf("Chart default for %s changed; review environment values before upgrade", key)
+		}
+		encoded, err := json.Marshal(override)
+		if err != nil {
+			return fmt.Errorf("copy %s environment values: %w", key, err)
+		}
+		var copied interface{}
+		if err := json.Unmarshal(encoded, &copied); err != nil {
+			return fmt.Errorf("copy %s environment values: %w", key, err)
+		}
+		values[key] = copied
+	}
+	return nil
 }
 
 // A local Helm render checks the exact downloaded package, including .Files,
@@ -164,10 +198,6 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 		return false, errors.New("verified Chart and installation identity are required")
 	}
 	vals := chartValues(t, station, org)
-	manifest, err := renderChart(t, vals, operation)
-	if err != nil {
-		return false, err
-	}
 	chart, err := loader.LoadArchive(bytes.NewReader(t.OCIChart.Package))
 	if err != nil {
 		return false, err
@@ -180,6 +210,9 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 	if errors.Is(err, driver.ErrReleaseNotFound) {
 		if actionName != "install" {
 			return false, errors.New("Helm release is absent during upgrade")
+		}
+		if _, err := renderChart(t, vals, operation); err != nil {
+			return false, err
 		}
 		install := action.NewInstall(cfg)
 		install.ReleaseName = t.AppID
@@ -202,18 +235,25 @@ func (h *HelmLifecycle) Ensure(ctx context.Context, t Target, actionName, operat
 	if err := requireDeployedRelease(current, t.Deployment.Namespace); err != nil {
 		return false, err
 	}
-	if current.Manifest != "" {
-		if !releaseBoundToInstallation(current, t, station, org) {
-			return false, errors.New("Helm release installation identity differs")
+	if current.Manifest != "" && !releaseBoundToInstallation(current, t, station, org) {
+		return false, errors.New("Helm release installation identity differs")
+	}
+	if actionName == "upgrade" {
+		if err := preserveUpgradeSiteValues(current, chart, vals); err != nil {
+			return false, err
 		}
-		if sameReleaseTarget(current, t.OCIChart.PackageDigest, vals) {
-			present, err := releaseResourcesPresent(cfg, current)
-			if err != nil {
-				return false, err
-			}
-			if present {
-				return false, nil
-			}
+	}
+	manifest, err := renderChart(t, vals, operation)
+	if err != nil {
+		return false, err
+	}
+	if current.Manifest != "" {
+		present, err := releaseResourcesPresent(cfg, current)
+		if err != nil {
+			return false, err
+		}
+		if sameReleaseTarget(current, t.OCIChart.PackageDigest, vals) && present {
+			return false, nil
 		}
 	}
 	if actionName == "install" && current.Manifest != "" && releasePackageDigest(current) != t.OCIChart.PackageDigest {
