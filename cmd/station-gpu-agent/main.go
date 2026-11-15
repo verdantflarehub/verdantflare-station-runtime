@@ -29,12 +29,14 @@ func run() int {
 		addr = "0.0.0.0:5057"
 	}
 
+	tombstoneDir := strings.TrimSpace(os.Getenv("STATION_GPU_TOMBSTONE_DIR"))
 	kubeClient, kubeErr := nodegpu.NewKubeClient(os.Getenv("STATION_KUBECONFIG"))
 	var slotCounter nodegpu.K8sSlotCounter
 	if kubeErr == nil {
 		slotCounter = nodegpu.KubeNodeSlotCounter{
 			Client:    kubeClient,
 			Namespace: os.Getenv("STATION_APP_GPU_NAMESPACE"),
+			Cache:     nodegpu.NewPodContainerCache(tombstoneDir),
 		}
 	}
 	// P1-H9: Resolve authoritative Node.metadata.uid from Kubernetes API whenever STATION_NODE_UID
@@ -71,7 +73,7 @@ func run() int {
 		Proc:                nodegpu.ProcInspector{ProcRoot: os.Getenv("HOST_PROC_ROOT")},
 		CRI:                 criSource,
 		SlotCounter:         slotCounter,
-		TombstoneDir:        strings.TrimSpace(os.Getenv("STATION_GPU_TOMBSTONE_DIR")),
+		TombstoneDir:        tombstoneDir,
 	}
 	if criSource == nil {
 		logger.Error("missing_cri_status_source")

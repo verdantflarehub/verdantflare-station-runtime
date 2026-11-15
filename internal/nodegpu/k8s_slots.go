@@ -1,12 +1,19 @@
 package nodegpu
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/scheduler"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -14,9 +21,159 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+type podContainerRecord struct {
+	PodUID    string            `json:"pod_uid"`
+	SingleApp bool              `json:"single_app"`
+	ByName    map[string]string `json:"by_name"`
+}
+
+type PodContainerCache struct {
+	mu    sync.Mutex
+	dir   string
+	byPod map[string]podContainerRecord
+}
+
+func NewPodContainerCache(dir string) *PodContainerCache {
+	return &PodContainerCache{
+		dir:   strings.TrimSpace(dir),
+		byPod: make(map[string]podContainerRecord),
+	}
+}
+
+func extractPodContainerRecord(pod *corev1.Pod) (podContainerRecord, bool) {
+	if pod == nil {
+		return podContainerRecord{}, false
+	}
+	pUID := normalizePodUID(string(pod.UID))
+	if pUID == "" || strings.Contains(pUID, "/") {
+		return podContainerRecord{}, false
+	}
+	rec := podContainerRecord{
+		PodUID:    pUID,
+		SingleApp: len(pod.Spec.Containers) == 1,
+		ByName:    make(map[string]string),
+	}
+	for _, cs := range pod.Status.ContainerStatuses {
+		name := strings.ToLower(strings.TrimSpace(cs.Name))
+		if name == "" {
+			continue
+		}
+		candidates := []string{cs.ContainerID}
+		if cs.State.Terminated != nil {
+			candidates = append(candidates, cs.State.Terminated.ContainerID)
+		}
+		if cs.LastTerminationState.Terminated != nil {
+			candidates = append(candidates, cs.LastTerminationState.Terminated.ContainerID)
+		}
+		for _, raw := range candidates {
+			cid := strings.ToLower(NormalizeContainerID(raw))
+			if isHex64ContainerID(cid) {
+				rec.ByName[name] = cid
+				break
+			}
+		}
+	}
+	if len(rec.ByName) == 0 {
+		return podContainerRecord{}, false
+	}
+	return rec, true
+}
+
+func (c *PodContainerCache) RecordPod(pod *corev1.Pod) {
+	if c == nil {
+		return
+	}
+	rec, ok := extractPodContainerRecord(pod)
+	if !ok {
+		return
+	}
+	c.mu.Lock()
+	if c.byPod == nil {
+		c.byPod = make(map[string]podContainerRecord)
+	}
+	prev, exists := c.byPod[rec.PodUID]
+	changed := !exists || prev.SingleApp != rec.SingleApp || len(prev.ByName) != len(rec.ByName)
+	if exists {
+		for k, v := range prev.ByName {
+			if _, has := rec.ByName[k]; !has {
+				rec.ByName[k] = v
+				changed = true
+			} else if rec.ByName[k] != v {
+				changed = true
+			}
+		}
+	}
+	c.byPod[rec.PodUID] = rec
+	dir := c.dir
+	c.mu.Unlock()
+
+	if changed && dir != "" {
+		if err := ensurePrivateDir(dir); err == nil {
+			if raw, mErr := json.Marshal(rec); mErr == nil {
+				_ = writePrivateAtomic(filepath.Join(dir, fmt.Sprintf("pod_cid_%s.json", rec.PodUID)), raw)
+			}
+		}
+	}
+}
+
+func matchRecordContainerHint(rec podContainerRecord, containerHint string) string {
+	hint := strings.ToLower(strings.TrimSpace(containerHint))
+	if hint != "" {
+		if cid, ok := rec.ByName[hint]; ok && isHex64ContainerID(cid) {
+			return cid
+		}
+	}
+	if rec.SingleApp && len(rec.ByName) == 1 {
+		for _, cid := range rec.ByName {
+			if isHex64ContainerID(cid) {
+				return cid
+			}
+		}
+	}
+	return ""
+}
+
+func (c *PodContainerCache) Lookup(podUID, containerHint string) string {
+	if c == nil {
+		return ""
+	}
+	cleanPod := normalizePodUID(podUID)
+	if cleanPod == "" || strings.Contains(cleanPod, "/") {
+		return ""
+	}
+	c.mu.Lock()
+	rec, ok := c.byPod[cleanPod]
+	dir := c.dir
+	c.mu.Unlock()
+	if ok {
+		if cid := matchRecordContainerHint(rec, containerHint); cid != "" {
+			return cid
+		}
+	}
+	if dir != "" {
+		raw, err := os.ReadFile(filepath.Join(dir, fmt.Sprintf("pod_cid_%s.json", cleanPod)))
+		if err == nil {
+			var diskRec podContainerRecord
+			if strictjson.Decode(bytes.NewReader(raw), 64<<10, &diskRec) == nil && normalizePodUID(diskRec.PodUID) == cleanPod {
+				c.mu.Lock()
+				if c.byPod == nil {
+					c.byPod = make(map[string]podContainerRecord)
+				}
+				c.byPod[cleanPod] = diskRec
+				c.mu.Unlock()
+				if cid := matchRecordContainerHint(diskRec, containerHint); cid != "" {
+					return cid
+				}
+			}
+		}
+	}
+	return ""
+}
+
 type KubeNodeSlotCounter struct {
 	Client    kubernetes.Interface
 	Namespace string
+	Cache     *PodContainerCache
 }
 
 func NewKubeClient(kubeconfig string) (kubernetes.Interface, error) {
@@ -90,7 +247,11 @@ func (k KubeNodeSlotCounter) ObserveNamespaceGPUPods(ctx context.Context, nodeNa
 	cleanNode := strings.TrimSpace(nodeName)
 	var out NodeGPUSlotObservation
 
-	for _, pod := range pods.Items {
+	for i := range pods.Items {
+		pod := pods.Items[i]
+		if k.Cache != nil {
+			k.Cache.RecordPod(&pod)
+		}
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			continue
 		}
@@ -153,4 +314,41 @@ func (k KubeNodeSlotCounter) ObserveNamespaceGPUPods(ctx context.Context, nodeNa
 		return out.ActivePods[i].PodUID < out.ActivePods[j].PodUID
 	})
 	return out, nil
+}
+
+func (k KubeNodeSlotCounter) ResolvePodContainerID(ctx context.Context, podUID, containerHint string) (string, error) {
+	cleanPod := normalizePodUID(podUID)
+	if cleanPod == "" {
+		return "", errors.New("empty pod_uid")
+	}
+	if k.Cache != nil {
+		if cid := k.Cache.Lookup(cleanPod, containerHint); cid != "" {
+			return cid, nil
+		}
+	}
+	if k.Client == nil {
+		return "", nil
+	}
+	ns := strings.TrimSpace(k.Namespace)
+	if ns == "" {
+		ns = "verdantflare-app"
+	}
+	pods, err := k.Client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+	var matched string
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if k.Cache != nil {
+			k.Cache.RecordPod(pod)
+		}
+		if normalizePodUID(string(pod.UID)) != cleanPod {
+			continue
+		}
+		if rec, ok := extractPodContainerRecord(pod); ok {
+			matched = matchRecordContainerHint(rec, containerHint)
+		}
+	}
+	return matched, nil
 }

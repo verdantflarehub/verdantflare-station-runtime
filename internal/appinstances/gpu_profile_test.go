@@ -261,9 +261,13 @@ func TestSharedGPUProfileObjectsAndValidation(t *testing.T) {
 		t.Fatalf("expected nvidia.com/gpu=1, got req=%v lim=%v", gpuReq, gpuLim)
 	}
 	hasSchedToken := false
+	hasVFContainerID := false
 	for _, ev := range container.Env {
 		if ev.Name == "NVIDIA_VISIBLE_DEVICES" && ev.Value == "void" {
 			t.Fatal("GPU worker must not inject NVIDIA_VISIBLE_DEVICES=void")
+		}
+		if ev.Name == "VF_CONTAINER_ID" && ev.Value == "pod-$(COMFYUI_POD_UID)-worker" {
+			hasVFContainerID = true
 		}
 		if ev.Name == "STATION_RUNTIME_SCHEDULER_TOKEN" && ev.ValueFrom != nil && ev.ValueFrom.SecretKeyRef != nil {
 			if ev.ValueFrom.SecretKeyRef.Name == "station-gpu-scheduler-tokens" && ev.ValueFrom.SecretKeyRef.Key == "comfyui-worker-token" {
@@ -273,6 +277,9 @@ func TestSharedGPUProfileObjectsAndValidation(t *testing.T) {
 	}
 	if !hasSchedToken {
 		t.Fatal("missing STATION_RUNTIME_SCHEDULER_TOKEN secretKeyRef")
+	}
+	if !hasVFContainerID {
+		t.Fatal("missing VF_CONTAINER_ID downward-API binding on GPU worker")
 	}
 	hasShmMount, hasShmVol := false, false
 	for _, m := range container.VolumeMounts {

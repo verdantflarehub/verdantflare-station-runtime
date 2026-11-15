@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -507,6 +508,87 @@ func NormalizeContainerID(raw string) string {
 		s = strings.TrimPrefix(s, prefix)
 	}
 	return strings.TrimSpace(s)
+}
+
+func isHex64ContainerID(raw string) bool {
+	s := strings.ToLower(NormalizeContainerID(raw))
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < 64; i++ {
+		ch := s[i]
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func parsePodScopedContainerID(raw string) (embeddedPodUID, containerHint string, ok bool) {
+	clean := strings.ToLower(NormalizeContainerID(raw))
+	if !strings.HasPrefix(clean, "pod-") || len(clean) < 42 || clean[40] != '-' {
+		return "", "", false
+	}
+	parsed, err := uuid.Parse(clean[4:40])
+	if err != nil || parsed == uuid.Nil {
+		return "", "", false
+	}
+	hint := strings.TrimSpace(clean[41:])
+	if hint == "" || strings.Contains(hint, "/") {
+		return "", "", false
+	}
+	return normalizePodUID(parsed.String()), hint, true
+}
+
+func (ts TombstoneStore) ResolveExitedContainerIDByPod(podUID, containerHint string) (string, bool) {
+	if strings.TrimSpace(ts.Dir) == "" {
+		return "", false
+	}
+	cleanPod := normalizePodUID(podUID)
+	if cleanPod == "" {
+		return "", false
+	}
+	entries, err := os.ReadDir(ts.Dir)
+	if err != nil {
+		return "", false
+	}
+	var exactMatch string
+	var podMatches []string
+	seen := map[string]bool{}
+	for _, d := range entries {
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".json") {
+			continue
+		}
+		stem := strings.TrimSuffix(d.Name(), ".json")
+		if !isHex64ContainerID(stem) {
+			continue
+		}
+		st, ok, lErr := ts.Load(stem)
+		if lErr != nil || !ok || normalizePodUID(st.PodUID) != cleanPod {
+			continue
+		}
+		cid := strings.ToLower(NormalizeContainerID(st.ContainerID))
+		if !isHex64ContainerID(cid) {
+			continue
+		}
+		if containerHint != "" && strings.EqualFold(strings.TrimSpace(st.ContainerName), containerHint) {
+			if exactMatch != "" && exactMatch != cid {
+				return "", false
+			}
+			exactMatch = cid
+		}
+		if !seen[cid] {
+			seen[cid] = true
+			podMatches = append(podMatches, cid)
+		}
+	}
+	if exactMatch != "" {
+		return exactMatch, true
+	}
+	if len(podMatches) == 1 {
+		return podMatches[0], true
+	}
+	return "", false
 }
 
 // CRIProxyHandler enforces the CP1 read-only CRI whitelist: ONLY

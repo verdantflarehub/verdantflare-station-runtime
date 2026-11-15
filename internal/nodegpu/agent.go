@@ -30,6 +30,10 @@ type DetailedK8sPodObserver interface {
 	ObserveNamespaceGPUPods(ctx context.Context, nodeName string) (NodeGPUSlotObservation, error)
 }
 
+type PodContainerIDResolver interface {
+	ResolvePodContainerID(ctx context.Context, podUID, containerHint string) (string, error)
+}
+
 type Agent struct {
 	NodeUID             string
 	NodeName            string
@@ -113,6 +117,96 @@ func (a *Agent) loadVerifiedEpochTombstone(podUID, containerID, bootID, gpuUUID 
 		return EpochTombstone{}, false
 	}
 	return et, true
+}
+
+func (a *Agent) resolvePodScopedContainerID(
+	ctx context.Context,
+	targetPodUID, rawTargetCID string,
+	supPID int,
+	supTicks uint64,
+	procs []ProcEntry,
+) (string, bool) {
+	embPod, hint, valid := parsePodScopedContainerID(rawTargetCID)
+	if !valid || embPod != targetPodUID {
+		return "", false
+	}
+
+	var candidates []string
+	addCandidate := func(cid string) bool {
+		clean := strings.ToLower(NormalizeContainerID(cid))
+		if !isHex64ContainerID(clean) {
+			return true
+		}
+		for _, existing := range candidates {
+			if existing != clean {
+				return false
+			}
+		}
+		if len(candidates) == 0 {
+			candidates = append(candidates, clean)
+		}
+		return true
+	}
+
+	var supMatches []string
+	procCIDSet := map[string]bool{}
+	for _, p := range procs {
+		if p.PodUID != targetPodUID || !isHex64ContainerID(p.ContainerID) {
+			continue
+		}
+		if p.Comm == "pause" || strings.HasPrefix(p.Cmdline, "/pause") {
+			continue
+		}
+		cid := strings.ToLower(p.ContainerID)
+		procCIDSet[cid] = true
+		if supPID > 0 && supTicks > 0 && p.InnermostPID() == supPID && p.StarttimeTicks == supTicks {
+			supMatches = append(supMatches, cid)
+		}
+	}
+	if len(supMatches) > 1 {
+		first := supMatches[0]
+		for _, m := range supMatches[1:] {
+			if m != first {
+				return "", false
+			}
+		}
+	}
+	if len(supMatches) >= 1 {
+		if !addCandidate(supMatches[0]) {
+			return "", false
+		}
+	} else if len(procCIDSet) == 1 {
+		for cid := range procCIDSet {
+			if !addCandidate(cid) {
+				return "", false
+			}
+		}
+	}
+
+	if a.SlotCounter != nil {
+		if resolver, ok := a.SlotCounter.(PodContainerIDResolver); ok {
+			k8sCID, err := resolver.ResolvePodContainerID(ctx, targetPodUID, hint)
+			if err != nil {
+				return "", false
+			}
+			if k8sCID != "" && !addCandidate(k8sCID) {
+				return "", false
+			}
+		}
+	}
+
+	if strings.TrimSpace(a.TombstoneDir) != "" {
+		if tombCID, ok := (TombstoneStore{Dir: a.TombstoneDir}).ResolveExitedContainerIDByPod(targetPodUID, hint); ok {
+			if !addCandidate(tombCID) {
+				return "", false
+			}
+		}
+	}
+
+	if len(candidates) != 1 {
+		return "", false
+	}
+	return candidates[0], true
 }
 
 // resolveHostSupervisor maps a container-namespace SupervisorPID + StarttimeTicks
@@ -215,6 +309,21 @@ func (a *Agent) VerifyTerminated(ctx context.Context, req scheduler.VerifyTermin
 	}
 	if !gpuFound {
 		return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+	}
+
+	if strings.HasPrefix(targetCID, "pod-") {
+		resolvedCID, ok := a.resolvePodScopedContainerID(
+			ctx,
+			targetPodUID,
+			targetCID,
+			req.SupervisorPID,
+			req.SupervisorStarttimeTicks,
+			procs,
+		)
+		if !ok {
+			return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+		}
+		targetCID = resolvedCID
 	}
 
 	criStatus, criErr := a.CRI.ContainerStatus(ctx, targetCID)

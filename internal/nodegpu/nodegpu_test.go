@@ -1070,3 +1070,133 @@ func TestWarmIdleSettledProxyUpstreamProcessTopology(t *testing.T) {
 		t.Fatalf("expected unattested rogue child process to block settlement, got %+v (%v)", resRogue, err)
 	}
 }
+
+func TestVerifyTerminatedResolvesPodScopedContainerID(t *testing.T) {
+	procRoot := t.TempDir()
+	tombDir := t.TempDir()
+	podUID := "24762719-e167-47e5-8934-5650debeb98c"
+	hexCID := "ed8620ca5dc7de08630d8e9f13b33f5aecd30a0646546e4e5c24f8cd37d214f1"
+	podScopedCID := "pod-" + podUID + "-runtime"
+	cgroup := "0::/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod24762719_e167_47e5_8934_5650debeb98c.slice/cri-containerd-" + hexCID + ".scope"
+
+	writeFakeProc(t, procRoot, 400677, 1, "python", "S", cgroup, "uvicorn main:app", fakeProcOpts{
+		bootID:       "boot-private-ns-1",
+		hasNvidiaFD:  true,
+		startTicks:   888111,
+		containerPID: 1,
+		pidNS:        "pid:[4026533100]",
+	})
+
+	k8sPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "video-frame-interpolation-5c4c8dd9f7-b8jdz",
+			Namespace: "verdantflare-app",
+			UID:       types.UID(podUID),
+		},
+		Spec: corev1.PodSpec{
+			NodeName:   "verdentflare-5090",
+			Containers: []corev1.Container{{Name: "rife"}},
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodRunning,
+			ContainerStatuses: []corev1.ContainerStatus{{
+				Name:        "rife",
+				ContainerID: "containerd://" + hexCID,
+			}},
+		},
+	}
+	fakeKube := fake.NewSimpleClientset(k8sPod)
+	slotCounter := KubeNodeSlotCounter{
+		Client:    fakeKube,
+		Namespace: "verdantflare-app",
+		Cache:     NewPodContainerCache(tombDir),
+	}
+	criSrc := &stubCRISource{
+		status: map[string]CRIContainerStatus{
+			hexCID: {ContainerID: hexCID, ContainerName: "rife", PodUID: podUID, State: "CONTAINER_RUNNING", Exited: false},
+		},
+	}
+	agent := &Agent{
+		NodeUID:      "node-5090-01",
+		NodeName:     "verdentflare-5090",
+		BearerToken:  strings.Repeat("k", 40),
+		TombstoneDir: tombDir,
+		SlotCounter:  slotCounter,
+		CRI:          criSrc,
+		Proc:         ProcInspector{ProcRoot: procRoot},
+		NVML: stubNVML{
+			snap: NVMLSnapshot{
+				SampledAt: time.Now().UTC(),
+				Devices: []GPUDeviceObservation{
+					{GPUUUID: "GPU-1", GPUIndex: 1, ModelName: "NVIDIA GeForce RTX 5090", TotalVRAMMiB: 32607, MeasuredFreeVRAMMiB: 31200, MeasuredUsedVRAMMiB: 1407, NVMLHealthy: true},
+				},
+				Processes: []GPUProcessObservation{
+					{GPUUUID: "GPU-1", PID: 400677, ProcessType: "C", UsedVRAMMiB: 620},
+				},
+			},
+		},
+	}
+
+	// 1. Live warm_idle_settled resolves pod-<uid>-runtime -> 64-hex CRI ID across /host/proc + K8s single-app container status.
+	resWarm, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID:                  "node-5090-01",
+		GPUUUID:                  "GPU-1",
+		PodUID:                   podUID,
+		ContainerID:              podScopedCID,
+		BootID:                   "boot-private-ns-1",
+		SupervisorPID:            1,
+		SupervisorStarttimeTicks: 888111,
+		EpochFenceConfirmed:      true,
+		Mode:                     "warm_idle_settled",
+	})
+	if err != nil || !resWarm.Verified || resWarm.MeasuredFreeVRAMMiB != 31200 {
+		t.Fatalf("expected pod-scoped container_id to resolve and verify warm_idle_settled, got %+v (%v)", resWarm, err)
+	}
+
+	// 2. Mismatched embedded Pod UID in pod-<other_uid>-runtime MUST fail closed!
+	resSpoof, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID:                  "node-5090-01",
+		GPUUUID:                  "GPU-1",
+		PodUID:                   podUID,
+		ContainerID:              "pod-11111111-2222-4333-8444-555555555555-runtime",
+		BootID:                   "boot-private-ns-1",
+		SupervisorPID:            1,
+		SupervisorStarttimeTicks: 888111,
+		EpochFenceConfirmed:      true,
+		Mode:                     "warm_idle_settled",
+	})
+	if !errors.Is(err, scheduler.ErrNodeStateUnknown) || resSpoof.Verified {
+		t.Fatalf("expected mismatched pod-scoped container_id to fail closed, got %+v (%v)", resSpoof, err)
+	}
+
+	// 3. After process exits and K8s Pod is deleted, cached PodContainerCache resolves pod-<uid>-runtime -> 64-hex for container_exited!
+	_ = os.RemoveAll(filepath.Join(procRoot, "400677"))
+	_ = fakeKube.CoreV1().Pods("verdantflare-app").Delete(context.Background(), k8sPod.Name, metav1.DeleteOptions{})
+	agent.NVML = stubNVML{
+		snap: NVMLSnapshot{
+			SampledAt: time.Now().UTC(),
+			Devices: []GPUDeviceObservation{
+				{GPUUUID: "GPU-1", GPUIndex: 1, ModelName: "NVIDIA GeForce RTX 5090", TotalVRAMMiB: 32607, MeasuredFreeVRAMMiB: 32100, MeasuredUsedVRAMMiB: 507, NVMLHealthy: true},
+			},
+		},
+	}
+	criSrc.status[hexCID] = CRIContainerStatus{
+		ContainerID:   hexCID,
+		ContainerName: "rife",
+		PodUID:        podUID,
+		State:         "CONTAINER_EXITED",
+		Exited:        true,
+		FinishedAt:    1731600500,
+	}
+	resExit, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID:     "node-5090-01",
+		GPUUUID:     "GPU-1",
+		PodUID:      podUID,
+		ContainerID: podScopedCID,
+		BootID:      "boot-private-ns-1",
+		Mode:        "container_exited",
+	})
+	if err != nil || !resExit.Verified || !resExit.ContainerExited {
+		t.Fatalf("expected post-exit pod-scoped container_id to verify via PodContainerCache + CRI, got %+v (%v)", resExit, err)
+	}
+}

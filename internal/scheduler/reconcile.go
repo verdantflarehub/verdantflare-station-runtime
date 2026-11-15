@@ -235,7 +235,7 @@ func filterOutHolderProcesses(procs []AttributedGPUProcess, podUID, containerID 
 	for _, p := range procs {
 		apPod := normPodUID(p.PodUID)
 		apCID := normContainerID(p.ContainerID)
-		if (cID != "" && apCID == cID) || (pUID != "" && apPod == pUID) {
+		if holderMatchesAttributedProcess(pUID, cID, apPod, apCID) {
 			continue
 		}
 		out = append(out, p)
@@ -3995,7 +3995,7 @@ func (s *Service) Snapshot(ctx context.Context) (LedgerSnapshot, error) {
 			for _, ap := range c.AttributedProcesses {
 				apPod := normPodUID(ap.PodUID)
 				apCID := normContainerID(ap.ContainerID)
-				if (cID != "" && apCID != "" && cID == apCID) || (cID == "" && pUID != "" && pUID == apPod) {
+				if holderMatchesAttributedProcess(pUID, cID, apPod, apCID) {
 					if ap.UsedVRAMMiB > 0 {
 						provenMiB += ap.UsedVRAMMiB
 					}

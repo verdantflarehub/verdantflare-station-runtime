@@ -152,6 +152,26 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 		}
 		c.Env = append(c.Env, env)
 	}
+	if p.GPUCount > 0 {
+		podUIDEnvName := ""
+		for _, existing := range c.Env {
+			if existing.ValueFrom != nil && existing.ValueFrom.FieldRef != nil && existing.ValueFrom.FieldRef.FieldPath == "metadata.uid" {
+				podUIDEnvName = existing.Name
+				break
+			}
+		}
+		if podUIDEnvName == "" {
+			podUIDEnvName = "VF_POD_UID"
+			c.Env = append(c.Env, corev1.EnvVar{
+				Name:      podUIDEnvName,
+				ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{APIVersion: "v1", FieldPath: "metadata.uid"}},
+			})
+		}
+		c.Env = append(c.Env, corev1.EnvVar{
+			Name:  "VF_CONTAINER_ID",
+			Value: fmt.Sprintf("pod-$(%s)-worker", podUIDEnvName),
+		})
+	}
 	if p.GPUCount > 0 && p.SchedulerSecretName != "" {
 		c.Env = append(c.Env, corev1.EnvVar{
 			Name: "STATION_RUNTIME_SCHEDULER_TOKEN",

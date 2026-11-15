@@ -92,6 +92,84 @@ func normContainerID(s string) string {
 	return strings.TrimSpace(v)
 }
 
+func isHex64ContainerID(cid string) bool {
+	if len(cid) != 64 {
+		return false
+	}
+	for i := 0; i < 64; i++ {
+		ch := cid[i]
+		if !((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f')) {
+			return false
+		}
+	}
+	return true
+}
+
+func parsePodScopedContainerID(cid string) (embeddedPodUID, containerHint string, ok bool) {
+	clean := normContainerID(cid)
+	if !strings.HasPrefix(clean, "pod-") || len(clean) < 42 || clean[40] != '-' {
+		return "", "", false
+	}
+	rawUID := clean[4:40]
+	parsed, err := uuid.Parse(rawUID)
+	if err != nil || parsed == uuid.Nil {
+		return "", "", false
+	}
+	hint := strings.TrimSpace(clean[41:])
+	if hint == "" {
+		return "", "", false
+	}
+	return normPodUID(parsed.String()), hint, true
+}
+
+// holderMatchesAttributedProcess reconciles unprivileged cgroupns=private container self-identities
+// ("pod-<pod_uid>-<cname>") with host-side cgroup 64-hex CRI container IDs while enforcing fail-closed
+// anti-spoofing (embedded <pod_uid> must equal both holderPodUID and apPodUID) and preserving strict
+// per-container separation whenever both sides carry concrete 64-hex or pod-scoped IDs.
+func holderMatchesAttributedProcess(holderPodUID, holderCID, apPodUID, apCID string) bool {
+	hPod := normPodUID(holderPodUID)
+	hCID := normContainerID(holderCID)
+	aPod := normPodUID(apPodUID)
+	aCID := normContainerID(apCID)
+
+	if hCID != "" && aCID != "" {
+		if hCID == aCID {
+			if hPod != "" && aPod != "" && hPod != aPod {
+				return false
+			}
+			if embPod, _, ok := parsePodScopedContainerID(hCID); ok {
+				if (hPod != "" && embPod != hPod) || (aPod != "" && embPod != aPod) {
+					return false
+				}
+			}
+			return true
+		}
+		if embPod, _, ok := parsePodScopedContainerID(hCID); ok && isHex64ContainerID(aCID) {
+			if aPod == "" || embPod != aPod || (hPod != "" && embPod != hPod) {
+				return false
+			}
+			return true
+		}
+		if embPod, _, ok := parsePodScopedContainerID(aCID); ok && isHex64ContainerID(hCID) {
+			if hPod == "" || embPod != hPod || (aPod != "" && embPod != aPod) {
+				return false
+			}
+			return true
+		}
+		return false
+	}
+	if hPod != "" && aPod != "" {
+		if embPod, _, ok := parsePodScopedContainerID(hCID); ok && embPod != hPod {
+			return false
+		}
+		if embPod, _, ok := parsePodScopedContainerID(aCID); ok && embPod != aPod {
+			return false
+		}
+		return hPod == aPod
+	}
+	return false
+}
+
 func sameCanonicalAppID(a, b string) bool {
 	ca := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(a)), "app-")
 	cb := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(b)), "app-")
@@ -481,12 +559,7 @@ func computeCardAccounting(card cardLockState, leases []activeLeaseRow, residenc
 			}
 			apPod := normPodUID(ap.PodUID)
 			apCID := normContainerID(ap.ContainerID)
-			matched := false
-			if cID != "" && apCID != "" {
-				matched = (cID == apCID)
-			} else if pUID != "" && apPod != "" {
-				matched = (pUID == apPod)
-			}
+			matched := holderMatchesAttributedProcess(pUID, cID, apPod, apCID)
 			if matched {
 				claimedProcIdx[idx] = true
 				if ap.UsedVRAMMiB > 0 {
