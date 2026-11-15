@@ -17,6 +17,7 @@ import (
 // Keep its encoding frozen; execution templates have independent versions.
 const legacyWorkerTemplateVersion = "blender-desktop-v1"
 const workerTemplateVersion = "blender-desktop-v2"
+const scheduledWorkerTemplateVersion = "blender-desktop-v3"
 const gpuResource corev1.ResourceName = "nvidia.com/gpu"
 
 var ErrComputeCapacity = errors.New("COMPUTE_CAPACITY_UNAVAILABLE")

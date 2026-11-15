@@ -17,6 +17,8 @@ type WorkerAccess struct {
 	BootID           string          `json:"boot_id"`
 	WorkerOrigin     string          `json:"worker_origin"`
 	WorkerToken      string          `json:"worker_token"`
+	ContainerID      string          `json:"container_id,omitempty"`
+	GPUEpoch         int64           `json:"gpu_epoch"`
 	Binding          ResourceBinding `json:"resource_binding"`
 }
 
@@ -34,12 +36,13 @@ func workerOrigin(in Run, p Profile) string {
 func (v WorkerAccess) valid(in Run, p Profile) bool {
 	return v.SchemaVersion == 1 && v.InstanceID == in.InstanceID && v.StartOperationID == in.OperationID && v.Generation == in.Generation &&
 		validBoot(v.BootID) && v.WorkerOrigin == workerOrigin(in, p) && credentialValid([]byte(v.WorkerToken)) &&
+		(v.ContainerID == "" || validContainerID(v.ContainerID)) && v.GPUEpoch >= 0 &&
 		validUID(v.Binding.PodUID) && v.Binding.PodName == runName(in) && v.Binding.Namespace == p.Namespace && v.Binding.Container == "worker"
 }
 
 func (j *Journal) Access(ctx context.Context, in Run, p Profile) (WorkerAccess, error) {
 	out := WorkerAccess{}
-	_, e := j.withLockedRecord(ctx, in, p, true, func(_ *pgxpool.Conn, r *StartRecord) error {
+	_, e := j.withLockedRecord(ctx, in, p, true, func(conn *pgxpool.Conn, r *StartRecord) error {
 		if r.Phase != "running" || r.Observation.BootID == "" {
 			return ErrNotReady
 		}
@@ -51,8 +54,14 @@ func (j *Journal) Access(ctx context.Context, in Run, p Profile) (WorkerAccess, 
 		if e != nil || !secretMatches(secret, in.Identity, p, current.SecretUID) {
 			return ErrBinding
 		}
+		resMeta := queryInstanceResidencyMeta(ctx, conn, j.StationID, in.InstanceID, current.PodUID, current.BootID)
+		cid := current.ContainerID
+		if cid == "" && validContainerID(resMeta.ContainerID) {
+			cid = resMeta.ContainerID
+		}
 		out = WorkerAccess{SchemaVersion: 1, InstanceID: in.InstanceID, StartOperationID: in.OperationID, Generation: in.Generation,
 			BootID: current.BootID, WorkerOrigin: workerOrigin(in, p), WorkerToken: string(secret.Data["worker-token"]),
+			ContainerID: cid, GPUEpoch: resMeta.GPUEpoch,
 			Binding: ResourceBinding{current.PodUID, runName(in), p.Namespace, "worker"}}
 		return nil
 	})

@@ -28,7 +28,8 @@ type Journal struct {
 	StationID string
 	Authorize func(context.Context, Run, Profile) (int64, error)
 	Observer  WorkerObserver
-	Stopper   WorkerStopper
+	Stopper             WorkerStopper
+	ReclamationVerifier ReclamationVerifier
 }
 
 type StartRecord struct {
@@ -258,6 +259,7 @@ func monotonicObservation(previous, next Observation) bool {
 	return (previous.SecretUID == "" || previous.SecretUID == next.SecretUID) &&
 		(previous.ServiceUID == "" || previous.ServiceUID == next.ServiceUID) &&
 		(previous.PodUID == "" || previous.PodUID == next.PodUID) &&
+		(previous.ContainerID == "" || previous.ContainerID == next.ContainerID) &&
 		(previous.BootID == "" || previous.BootID == next.BootID)
 }
 

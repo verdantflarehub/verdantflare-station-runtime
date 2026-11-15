@@ -216,3 +216,47 @@ func TestWorkerRejectsForeignOrModifiedWorkload(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduledWorkerTemplateV3PreservesV1AndV2Compatibility(t *testing.T) {
+	in, p, b, _, _ := workerFixture(t)
+	start := uuid.NewString()
+	src := WorkerSource{SourceRevisionID: in.CreateOperationID, Empty: true}
+
+	t.Setenv("STATION_BLENDER_WORKER_SCHEDULER_URL", "")
+	t.Setenv("STATION_BLENDER_WORKER_SCHEDULER_SECRET_NAME", "")
+	v2Pod, _, err := workerObjects(in, p, b, start, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2Pod.UID = types.UID(uuid.NewString())
+	v1Pod, _, err := legacyWorkerObjects(in, p, b, start, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Pod.UID = types.UID(uuid.NewString())
+
+	t.Setenv("STATION_BLENDER_WORKER_SCHEDULER_URL", "http://station-runtime.verdantflare-station.svc.cluster.local:5056")
+	t.Setenv("STATION_BLENDER_WORKER_SCHEDULER_SECRET_NAME", "station-gpu-scheduler-client")
+	t.Setenv("STATION_BLENDER_WORKER_SCHEDULER_SECRET_KEY", "blender-token")
+
+	v3Pod, _, err := workerObjects(in, p, b, start, src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v3Pod.UID = types.UID(uuid.NewString())
+	if v3Pod.Annotations["station.verdantflare.com/worker-template"] != scheduledWorkerTemplateVersion {
+		t.Fatalf("unexpected template: %s", v3Pod.Annotations["station.verdantflare.com/worker-template"])
+	}
+	if v3Pod.Labels[workerGPUClientLabel] != "true" || v3Pod.Labels[workerGPUResidencyTargetLabel] != "true" {
+		t.Fatalf("missing scheduler/residency labels: %+v", v3Pod.Labels)
+	}
+	if !workerPodMatches(v3Pod, v3Pod, string(v3Pod.UID)) {
+		t.Fatal("v3 pod did not match v3 desired")
+	}
+	if !workerPodMatches(v2Pod, v3Pod, string(v2Pod.UID)) {
+		t.Fatal("existing v2 pod failed compatibility match when scheduler v3 is enabled")
+	}
+	if !workerPodMatches(v1Pod, v3Pod, string(v1Pod.UID)) {
+		t.Fatal("existing v1 pod failed compatibility match when scheduler v3 is enabled")
+	}
+}

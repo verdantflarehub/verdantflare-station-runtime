@@ -20,6 +20,9 @@ const stationKey = prefix + "station-id"
 const poolKey = prefix + "workspace-pool"
 const specKey = prefix + "appinstance-spec-hash"
 const workerPriorityClass = "station-app-worker"
+const gpuClientLabel = "verdantflare.io/gpu-scheduler-client"
+const gpuResidencyTargetLabel = "verdantflare.io/gpu-residency-target"
+const gpuResourceName corev1.ResourceName = "nvidia.com/gpu"
 
 type Identity struct {
 	StationID      string `json:"station_id"`
@@ -93,14 +96,30 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 	grace := int64(30)
 	preempt := corev1.PreemptNever
 	tmp := resource.MustParse("256Mi")
-	labels := map[string]string{prefix + "instance-id": in.InstanceID, prefix + "start-operation-id": in.OperationID}
+	selectorLabels := map[string]string{prefix + "instance-id": in.InstanceID, prefix + "start-operation-id": in.OperationID}
+	podLabels := map[string]string{prefix + "instance-id": in.InstanceID, prefix + "start-operation-id": in.OperationID}
+	if p.GPUCount > 0 {
+		podLabels[gpuClientLabel] = "true"
+		podLabels[gpuResidencyTargetLabel] = "true"
+	}
+	mounts := []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}, {Name: "tmp", MountPath: "/tmp"}}
+	if p.GPUCount > 0 {
+		mounts = append(mounts, corev1.VolumeMount{Name: "shm", MountPath: "/dev/shm"})
+	}
+	for _, rm := range p.ReadonlyMounts {
+		mounts = append(mounts, corev1.VolumeMount{Name: rm.Name, MountPath: rm.MountPath, ReadOnly: true})
+	}
 	c := corev1.Container{Name: "worker", Image: p.Image, ImagePullPolicy: corev1.PullAlways,
 		SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: &no, ReadOnlyRootFilesystem: &yes, Privileged: &no,
 			Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 		Ports:        []corev1.ContainerPort{{Name: "control", ContainerPort: p.Port, Protocol: corev1.ProtocolTCP}},
-		VolumeMounts: []corev1.VolumeMount{{Name: "workspace", MountPath: "/workspace"}, {Name: "tmp", MountPath: "/tmp"}},
+		VolumeMounts: mounts,
 		Resources:    profileResources(p)}
-	c.Env = append(c.Env, corev1.EnvVar{Name: "NVIDIA_VISIBLE_DEVICES", Value: "void"})
+	if p.GPUCount == 0 {
+		c.Env = append(c.Env, corev1.EnvVar{Name: "NVIDIA_VISIBLE_DEVICES", Value: "void"})
+	} else if _, hasCap := p.Env["NVIDIA_DRIVER_CAPABILITIES"]; !hasCap {
+		c.Env = append(c.Env, corev1.EnvVar{Name: "NVIDIA_DRIVER_CAPABILITIES", Value: "compute,utility"})
+	}
 	keys := make([]string, 0, len(p.Env))
 	for k := range p.Env {
 		keys = append(keys, k)
@@ -133,23 +152,60 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 		}
 		c.Env = append(c.Env, env)
 	}
+	if p.GPUCount > 0 && p.SchedulerSecretName != "" {
+		c.Env = append(c.Env, corev1.EnvVar{
+			Name: "STATION_RUNTIME_SCHEDULER_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: p.SchedulerSecretName},
+					Key:                  p.SchedulerSecretKey,
+				},
+			},
+		})
+	}
 	probe := func(period, failures int32) *corev1.Probe {
 		return &corev1.Probe{ProbeHandler: corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString("control")}}, PeriodSeconds: period, TimeoutSeconds: 3, FailureThreshold: failures}
 	}
 	c.StartupProbe = probe(5, 60)
 	c.ReadinessProbe = probe(5, 3)
 	c.LivenessProbe = probe(15, 3)
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: runName(in), Namespace: p.Namespace, Labels: labels, Annotations: in.annotations(p)}, Spec: corev1.PodSpec{
+	volumes := []corev1.Volume{
+		{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: b.PVCName}}},
+		{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &tmp}}},
+	}
+	if p.GPUCount > 0 {
+		shmLimit := resource.MustParse("2Gi")
+		if p.ShmSizeBytes > 0 {
+			shmLimit = *resource.NewQuantity(p.ShmSizeBytes, resource.BinarySI)
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "shm",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: &shmLimit},
+			},
+		})
+	}
+	for _, rm := range p.ReadonlyMounts {
+		volumes = append(volumes, corev1.Volume{
+			Name: rm.Name,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: rm.ClaimName,
+					ReadOnly:  true,
+				},
+			},
+		})
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: runName(in), Namespace: p.Namespace, Labels: podLabels, Annotations: in.annotations(p)}, Spec: corev1.PodSpec{
 		Containers: []corev1.Container{c}, AutomountServiceAccountToken: &no, EnableServiceLinks: &no, RestartPolicy: corev1.RestartPolicyNever,
 		TerminationGracePeriodSeconds: &grace, Priority: &zero, PreemptionPolicy: &preempt, PriorityClassName: workerPriorityClass, SchedulerName: "default-scheduler",
 		NodeSelector: map[string]string{corev1.LabelHostname: p.NodeName},
 		SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: &yes, RunAsUser: &p.RunAsUser, RunAsGroup: &p.RunAsUser, FSGroup: &p.RunAsUser,
 			SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-		Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: b.PVCName}}},
-			{Name: "tmp", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: &tmp}}}},
+		Volumes: volumes,
 	}}
-	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: p.Namespace, Labels: labels, Annotations: in.annotations(p)}, Spec: corev1.ServiceSpec{
-		Type: corev1.ServiceTypeClusterIP, Selector: labels, Ports: []corev1.ServicePort{{Name: "control", Port: p.Port, TargetPort: intstr.FromString("control"), Protocol: corev1.ProtocolTCP}}}}
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: p.Namespace, Labels: selectorLabels, Annotations: in.annotations(p)}, Spec: corev1.ServiceSpec{
+		Type: corev1.ServiceTypeClusterIP, Selector: selectorLabels, Ports: []corev1.ServicePort{{Name: "control", Port: p.Port, TargetPort: intstr.FromString("control"), Protocol: corev1.ProtocolTCP}}}}
 	// The fixed PriorityClass makes the existing priority=0/Never semantics
 	// admissible. Preserve v1 hashes (including Services of accepted starts).
 	// podMatches still checks the full class, priority and preemption policy.
@@ -166,7 +222,7 @@ func WorkerObjects(in Run, p Profile, b Volume) (*corev1.Pod, *corev1.Service, e
 }
 
 func profileResources(p Profile) corev1.ResourceRequirements {
-	if p.CPURequestMillis == 0 && p.MemoryRequestBytes == 0 {
+	if p.CPURequestMillis == 0 && p.MemoryRequestBytes == 0 && p.GPUCount == 0 {
 		return corev1.ResourceRequirements{}
 	}
 	r := corev1.ResourceRequirements{Requests: corev1.ResourceList{}, Limits: corev1.ResourceList{}}
@@ -177,6 +233,11 @@ func profileResources(p Profile) corev1.ResourceRequirements {
 	if p.MemoryRequestBytes > 0 {
 		r.Requests[corev1.ResourceMemory] = *resource.NewQuantity(p.MemoryRequestBytes, resource.BinarySI)
 		r.Limits[corev1.ResourceMemory] = *resource.NewQuantity(p.MemoryLimitBytes, resource.BinarySI)
+	}
+	if p.GPUCount > 0 {
+		q := *resource.NewQuantity(p.GPUCount, resource.DecimalSI)
+		r.Requests[gpuResourceName] = q
+		r.Limits[gpuResourceName] = q
 	}
 	return r
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 
@@ -23,6 +24,21 @@ import (
 
 const startKey = "station.verdantflare.com/start-operation-id"
 const workerHashKey = "station.verdantflare.com/worker-hash"
+const workerGPUClientLabel = "verdantflare.io/gpu-scheduler-client"
+const workerGPUResidencyTargetLabel = "verdantflare.io/gpu-residency-target"
+
+func blenderWorkerSchedulerConfig() (url, secretName, secretKey string, enabled bool) {
+	url = strings.TrimSpace(os.Getenv("STATION_BLENDER_WORKER_SCHEDULER_URL"))
+	secretName = strings.TrimSpace(os.Getenv("STATION_BLENDER_WORKER_SCHEDULER_SECRET_NAME"))
+	secretKey = strings.TrimSpace(os.Getenv("STATION_BLENDER_WORKER_SCHEDULER_SECRET_KEY"))
+	if secretKey == "" {
+		secretKey = "blender-token"
+	}
+	if url == "" || secretName == "" {
+		return "", "", "", false
+	}
+	return url, secretName, secretKey, true
+}
 
 var ErrWorkerExited = errors.New("WORKER_EXITED")
 
@@ -65,6 +81,24 @@ func workerObjects(in Identity, p HelperProfile, b VolumeBinding, startID string
 	pod = pod.DeepCopy()
 	pod.Spec.Containers[0].Resources = workerResources()
 	pod.Annotations["station.verdantflare.com/worker-template"] = workerTemplateVersion
+	if schedURL, secretName, secretKey, ok := blenderWorkerSchedulerConfig(); ok {
+		pod.Labels[workerGPUClientLabel] = "true"
+		pod.Labels[workerGPUResidencyTargetLabel] = "true"
+		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env,
+			corev1.EnvVar{Name: "STATION_RUNTIME_SCHEDULER_URL", Value: schedURL},
+			corev1.EnvVar{Name: "STATION_RUNTIME_GPU_LEASE_REQUIRED", Value: "true"},
+			corev1.EnvVar{
+				Name: "STATION_RUNTIME_SCHEDULER_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
+						Key:                  secretKey,
+					},
+				},
+			},
+		)
+		pod.Annotations["station.verdantflare.com/worker-template"] = scheduledWorkerTemplateVersion
+	}
 	setPodSpecHash(pod, workerHashKey)
 	return pod, svc, nil
 }
@@ -132,11 +166,33 @@ func legacyWorkerObjects(in Identity, p HelperProfile, b VolumeBinding, startID 
 	return pod, svc, nil
 }
 
+func stripScheduledWorkerFields(pod *corev1.Pod) {
+	delete(pod.Labels, workerGPUClientLabel)
+	delete(pod.Labels, workerGPUResidencyTargetLabel)
+	filtered := make([]corev1.EnvVar, 0, len(pod.Spec.Containers[0].Env))
+	for _, ev := range pod.Spec.Containers[0].Env {
+		switch ev.Name {
+		case "STATION_RUNTIME_SCHEDULER_URL", "STATION_RUNTIME_GPU_LEASE_REQUIRED", "STATION_RUNTIME_SCHEDULER_TOKEN":
+			continue
+		default:
+			filtered = append(filtered, ev)
+		}
+	}
+	pod.Spec.Containers[0].Env = filtered
+}
+
 func workerPodMatches(actual, desired *corev1.Pod, uid string) bool {
-	if actual.Annotations["station.verdantflare.com/worker-template"] == legacyWorkerTemplateVersion {
+	actualTpl := actual.Annotations["station.verdantflare.com/worker-template"]
+	if actualTpl == legacyWorkerTemplateVersion {
 		desired = desired.DeepCopy()
+		stripScheduledWorkerFields(desired)
 		desired.Spec.Containers[0].Resources = legacyWorkerResources()
 		desired.Annotations["station.verdantflare.com/worker-template"] = legacyWorkerTemplateVersion
+		setPodSpecHash(desired, workerHashKey)
+	} else if actualTpl == workerTemplateVersion && desired.Annotations["station.verdantflare.com/worker-template"] == scheduledWorkerTemplateVersion {
+		desired = desired.DeepCopy()
+		stripScheduledWorkerFields(desired)
+		desired.Annotations["station.verdantflare.com/worker-template"] = workerTemplateVersion
 		setPodSpecHash(desired, workerHashKey)
 	}
 	actual = withProbeDefaults(actual)

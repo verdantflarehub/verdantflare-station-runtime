@@ -3,7 +3,8 @@ name: Station Runtime
 env:
   REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
   IMAGE_NAME: wod/verdantflare-station
-  IMAGE_VERSION: station-runtime-v0.2.76
+  IMAGE_VERSION: station-runtime-v0.2.77
+  COLLECTOR_IMAGE_VERSION: station-gpu-collector-v0.2.77
 
 on:
   push:
@@ -35,6 +36,7 @@ jobs:
           [[ "$endpoint" =~ ^[a-zA-Z0-9.-]+(:[0-9]+)?$ ]] || { echo 'Invalid or missing registry endpoint'; exit 1; }
           [[ "$IMAGE_NAME" =~ ^[a-z0-9]+([._/-][a-z0-9]+)*$ ]] || { echo 'Invalid image repository'; exit 1; }
           [[ "$IMAGE_VERSION" =~ ^station-runtime-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid image version'; exit 1; }
+          [[ "$COLLECTOR_IMAGE_VERSION" =~ ^station-gpu-collector-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid collector image version'; exit 1; }
           echo "endpoint=$endpoint" >> "$GITHUB_OUTPUT"
           echo "image=$endpoint/$IMAGE_NAME" >> "$GITHUB_OUTPUT"
       - uses: docker/login-action@v3
@@ -46,13 +48,30 @@ jobs:
         env:
           IMAGE: ${{ steps.registry.outputs.image }}:${{ env.IMAGE_VERSION }}
         run: bash scripts/check-image-absent.sh
+      - name: Refuse an existing collector release tag
+        env:
+          IMAGE: ${{ steps.registry.outputs.image }}:${{ env.COLLECTOR_IMAGE_VERSION }}
+        run: bash scripts/check-image-absent.sh
       - name: Publish versioned release image
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: Dockerfile
           push: true
           platforms: linux/amd64
           tags: ${{ steps.registry.outputs.image }}:${{ env.IMAGE_VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+      - name: Publish standalone GPU telemetry collector image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.collector
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.registry.outputs.image }}:${{ env.COLLECTOR_IMAGE_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,7 +23,9 @@ import (
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/computepolicy"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/executor"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/instances"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/modelcache"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/releasebinding"
+	"github.com/verdantflarehub/verdantflare-station-runtime/internal/scheduler"
 	"google.golang.org/grpc"
 )
 
@@ -106,6 +109,22 @@ func mergeStateNamespaces(existing []string, rawEnv string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func multiplexModelCacheHandler(primary http.Handler, modelHandler http.Handler) http.Handler {
+	if modelHandler == nil {
+		return primary
+	}
+	if primary == nil {
+		return modelHandler
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/internal/v1/model-cache/") || r.URL.Path == "/internal/v1/model-cache" {
+			modelHandler.ServeHTTP(w, r)
+			return
+		}
+		primary.ServeHTTP(w, r)
+	})
 }
 
 func run() int {
@@ -240,6 +259,155 @@ func run() int {
 		logger.Error("transition_credential_reused")
 		return 1
 	}
+	var gpuCallers scheduler.CallerRegistry
+	var gpuSvc *scheduler.Service
+	var gpuPool *pgxpool.Pool
+	gpuCallersPath := strings.TrimSpace(os.Getenv("STATION_GPU_SCHEDULER_CALLERS"))
+	gpuAddrEnv := strings.TrimSpace(os.Getenv("STATION_GPU_SCHEDULER_ADDR"))
+	if gpuCallersPath != "" || gpuAddrEnv != "" {
+		f, e := os.Open(gpuCallersPath)
+		if e != nil {
+			logger.Error("invalid_gpu_scheduler_callers")
+			return 1
+		}
+		gpuCallers, e = scheduler.LoadCallerRegistry(f, os.Getenv)
+		_ = f.Close()
+		if e != nil {
+			logger.Error("invalid_gpu_scheduler_callers")
+			return 1
+		}
+		schedPool := pool
+		if gpuDSN := strings.TrimSpace(os.Getenv("STATION_GPU_DATABASE_URL")); gpuDSN != "" {
+			gCfg, pErr := pgxpool.ParseConfig(gpuDSN)
+			if pErr != nil {
+				logger.Error("invalid_gpu_database_config")
+				return 1
+			}
+			gCfg.MaxConns = 4
+			gCfg.ConnConfig.ConnectTimeout = 3 * time.Second
+			gpuPool, pErr = pgxpool.NewWithConfig(ctx, gCfg)
+			if pErr != nil {
+				logger.Error("gpu_database_unavailable")
+				return 1
+			}
+			defer gpuPool.Close()
+			schedPool = gpuPool
+		}
+		quota := scheduler.DefaultAppGPUQuota
+		if q, pErr := strconv.Atoi(strings.TrimSpace(os.Getenv("STATION_APP_GPU_QUOTA"))); pErr == nil && q > 0 {
+			quota = q
+		}
+		agentURL := strings.TrimSpace(os.Getenv("STATION_GPU_AGENT_DEFAULT_URL"))
+		agentToken := strings.TrimSpace(os.Getenv("STATION_GPU_AGENT_TOKEN"))
+		if agentURL == "" || len(agentToken) < 32 {
+			logger.Error("invalid_gpu_agent_verifier_configuration")
+			return 1
+		}
+		verifier := scheduler.HTTPNodeVerifier{
+			DefaultURL:  agentURL,
+			BearerToken: agentToken,
+		}
+		var instanceDir scheduler.InstanceDirectory
+		var tokenResolver func(context.Context, string) (string, error)
+		if !strings.EqualFold(strings.TrimSpace(os.Getenv("STATION_GPU_VERIFY_INSTANCE_DIRECTORY")), "false") {
+			appPortMap := map[string]int{
+				"comfyui":     8188,
+				"app-comfyui": 8188,
+				"blender":     48084,
+				"app-blender": 48084,
+			}
+			for _, p := range appProfiles {
+				if p.AppID != "" && p.Port > 0 {
+					appPortMap[p.AppID] = int(p.Port)
+				}
+			}
+			instanceDir = &scheduler.PGInstanceDirectory{
+				Pool:     schedPool,
+				AppPorts: appPortMap,
+			}
+			if driver.Client != nil {
+				tokenResolver = (scheduler.KubeInstanceTokenResolver{
+					Directory: instanceDir,
+					StationID: station,
+					Kube:      driver.Client,
+				}).ResolveToken
+			}
+		}
+		gpuSvc = &scheduler.Service{
+			Pool:             schedPool,
+			StationID:        station,
+			Callers:          gpuCallers,
+			AppGPUQuota:      quota,
+			CutoverCompleted: strings.EqualFold(strings.TrimSpace(os.Getenv("STATION_GPU_CUTOVER_COMPLETED")), "true"),
+			InstanceDir:      instanceDir,
+			Verifier:         verifier,
+			Evictor: scheduler.HTTPResidencyEvictor{
+				BearerToken:   strings.TrimSpace(os.Getenv("STATION_GPU_EVICTOR_TOKEN")),
+				TokenResolver: tokenResolver,
+			},
+		}
+	}
+	var modelCacheSvc *modelcache.Service
+	var initialCatalogEntries []modelcache.CatalogEntry
+	modelCacheRoot := strings.TrimSpace(os.Getenv("STATION_MODEL_CACHE_ROOT"))
+	if modelCacheRoot != "" {
+		var allowedHosts []string
+		if rawHosts := strings.TrimSpace(os.Getenv("STATION_MODEL_ALLOWED_HOSTS")); rawHosts != "" {
+			for _, h := range strings.Split(rawHosts, ",") {
+				if trimmed := strings.TrimSpace(h); trimmed != "" {
+					allowedHosts = append(allowedHosts, trimmed)
+				}
+			}
+		}
+		safeDL, dlErr := modelcache.NewSafeDownloader(allowedHosts, os.Getenv("STATION_MODEL_EGRESS_PROXY_URL"))
+		if dlErr != nil {
+			logger.Error("invalid_model_cache_downloader_configuration")
+			return 1
+		}
+		if err = modelcache.EnsureLayout(modelCacheRoot); err != nil {
+			logger.Error("invalid_model_cache_root_layout")
+			return 1
+		}
+		if catFile := strings.TrimSpace(os.Getenv("STATION_MODEL_CATALOG_FILE")); catFile != "" {
+			rawCat, rErr := os.ReadFile(catFile)
+			if rErr != nil {
+				logger.Error("invalid_model_catalog_file")
+				return 1
+			}
+			initialCatalogEntries, rErr = modelcache.LoadCatalogYAML(rawCat)
+			if rErr != nil {
+				logger.Error("invalid_model_catalog_yaml")
+				return 1
+			}
+		}
+		var revoker modelcache.AppAdmissionRevoker
+		reconcileToken := strings.TrimSpace(os.Getenv("STATION_MODEL_RECONCILE_TOKEN"))
+		if reconcileToken == "" {
+			reconcileToken = strings.TrimSpace(os.Getenv("STATION_APP_INSTANCE_COMFYUI_TOKEN"))
+		}
+		if reconcileToken == "" {
+			reconcileToken = strings.TrimSpace(os.Getenv("STATION_GPU_EVICTOR_TOKEN"))
+		}
+		appAdmissionOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("STATION_MODEL_APP_ADMISSION_URL")), "/")
+		if appAdmissionOrigin != "" && reconcileToken != "" {
+			revoker = modelcache.HTTPAppAdmissionRevoker{
+				EndpointsByApp: map[string]string{
+					"comfyui":     appAdmissionOrigin + "/internal/v1/model-admissions/revoke-or-verify",
+					"app-comfyui": appAdmissionOrigin + "/internal/v1/model-admissions/revoke-or-verify",
+				},
+				BearerToken: reconcileToken,
+			}
+		}
+		modelCacheSvc = &modelcache.Service{
+			Store:               &modelcache.PGStore{Pool: pool, StationID: station},
+			StationID:           station,
+			RootDir:             modelCacheRoot,
+			Downloader:          safeDL,
+			UpstreamBearerToken: strings.TrimSpace(os.Getenv("STATION_MODEL_UPSTREAM_BEARER_TOKEN")),
+			Revoker:             revoker,
+		}
+	}
+	enforceStrictDBRoles := strings.EqualFold(strings.TrimSpace(os.Getenv("STATION_ENFORCE_DB_ROLE_ISOLATION")), "true")
 	ready := func(c context.Context) error {
 		var id string
 		var table bool
@@ -262,6 +430,22 @@ func run() int {
 				return errors.New("transition migrations not ready")
 			}
 		}
+		if gpuSvc != nil {
+			if gpuSvc.Verifier == nil {
+				return errors.New("GPU node verifier not configured")
+			}
+			if e = gpuSvc.Pool.QueryRow(c, `SELECT to_regclass('station.gpu_physical_cards') IS NOT NULL AND to_regclass('station.gpu_resource_leases') IS NOT NULL AND to_regclass('station.gpu_instance_residency') IS NOT NULL AND to_regclass('station.gpu_scheduler_events') IS NOT NULL`).Scan(&table); e != nil || !table {
+				return errors.New("GPU scheduler migrations not ready")
+			}
+			if e = gpuSvc.VerifyDatabasePrivilegeIsolation(c, enforceStrictDBRoles); e != nil {
+				return e
+			}
+		}
+		if modelCacheSvc != nil {
+			if e = pool.QueryRow(c, `SELECT to_regclass('station.model_catalog_entries') IS NOT NULL AND to_regclass('station.model_cache_blobs') IS NOT NULL AND to_regclass('station.model_ref_pins') IS NOT NULL AND to_regclass('station.model_ensure_idempotency') IS NOT NULL`).Scan(&table); e != nil || !table {
+				return errors.New("model cache migrations not ready")
+			}
+		}
 
 		return nil
 	}
@@ -271,6 +455,15 @@ func run() int {
 	if err != nil {
 		logger.Error("migration_or_station_not_ready")
 		return 1
+	}
+	if modelCacheSvc != nil && len(initialCatalogEntries) > 0 {
+		seedCtx, seedStop := context.WithTimeout(ctx, 10*time.Second)
+		seedErr := modelCacheSvc.RegisterCatalogEntries(seedCtx, initialCatalogEntries)
+		seedStop()
+		if seedErr != nil {
+			logger.Error("model_catalog_seed_failed")
+			return 1
+		}
 	}
 	addr := os.Getenv("STATION_RUNTIME_ADDR")
 	if addr == "" {
@@ -305,31 +498,111 @@ func run() int {
 		w.WriteHeader(200)
 	})
 	probe := &http.Server{Addr: probeAddr, Handler: mux, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
-	done := make(chan error, 4)
+	done := make(chan error, 5)
 	var appInstanceServer *http.Server
 	if appProfiles != nil {
 		appAddr := os.Getenv("STATION_APP_INSTANCE_ADDR")
 		if appAddr == "" {
 			appAddr = "127.0.0.1:5055"
 		}
+		var recVerifier appinstances.ReclamationVerifier
+		if gpuSvc != nil && gpuSvc.Verifier != nil {
+			recVerifier = gpuSvc.Verifier
+		} else if agentURL := strings.TrimSpace(os.Getenv("STATION_GPU_AGENT_DEFAULT_URL")); agentURL != "" {
+			if agentToken := strings.TrimSpace(os.Getenv("STATION_GPU_AGENT_TOKEN")); len(agentToken) >= 32 {
+				recVerifier = scheduler.HTTPNodeVerifier{DefaultURL: agentURL, BearerToken: agentToken}
+			}
+		}
 		observer := appinstances.HTTPWorkerObserver{Client: appinstances.InternalHTTPClient()}
 		handler := appinstances.Handler{StationID: station, Profiles: appProfiles, Callers: appCallers,
 			Execute: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile) (appinstances.StartRecord, error) {
-				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, Observer: observer}
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, Observer: observer, ReclamationVerifier: recVerifier}
 				return journal.Start(ctx, in, p)
 			},
 			Access: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile) (appinstances.WorkerAccess, error) {
-				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, Observer: observer}
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, Observer: observer, ReclamationVerifier: recVerifier}
 				return journal.Access(ctx, in, p)
 			},
 			Stop: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile, operation, boot string) (appinstances.StopRecord, error) {
 				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check,
-					Stopper: appinstances.HTTPWorkerStopper{Client: appinstances.InternalHTTPClient()}}
+					Stopper: appinstances.HTTPWorkerStopper{Client: appinstances.InternalHTTPClient()}, ReclamationVerifier: recVerifier}
 				return journal.Stop(ctx, in, p, operation, boot)
+			},
+			UpgradeStop: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile, operation, boot string) (appinstances.StopRecord, error) {
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check,
+					Stopper: appinstances.HTTPWorkerStopper{Client: appinstances.InternalHTTPClient()}, ReclamationVerifier: recVerifier}
+				return journal.StopForTemplateUpgrade(ctx, in, p, operation, boot)
+			},
+			RepairStop: func(ctx context.Context, caller appinstances.Caller, in appinstances.Run, p appinstances.Profile, opts appinstances.RepairStopOptions) (appinstances.StopRecord, error) {
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check,
+					Stopper: appinstances.HTTPWorkerStopper{Client: appinstances.InternalHTTPClient()}, ReclamationVerifier: recVerifier}
+				return journal.StopForRepairRestart(ctx, in, p, opts)
+			},
+			ReclamationStatus: func(ctx context.Context, caller appinstances.Caller, identity appinstances.Identity, callerProfiles map[string]appinstances.Profile, generation int64, boot string) (appinstances.ReclamationProof, error) {
+				journal := &appinstances.Journal{Pool: pool, Client: driver.Client, StationID: station, Authorize: caller.Authority.Check, ReclamationVerifier: recVerifier}
+				return journal.ReclamationStatus(ctx, identity, callerProfiles, generation, boot)
 			}}
-		appInstanceServer = &http.Server{Addr: appAddr, Handler: handler, ReadHeaderTimeout: 3 * time.Second,
+		var appRootHandler http.Handler = handler
+		if modelCacheSvc != nil {
+			appRootHandler = multiplexModelCacheHandler(handler, modelcache.AppHandler{
+				StationID: station,
+				Callers:   appCallers,
+				Service:   modelCacheSvc,
+			})
+		}
+		appInstanceServer = &http.Server{Addr: appAddr, Handler: appRootHandler, ReadHeaderTimeout: 3 * time.Second,
 			ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- appInstanceServer.ListenAndServe() }()
+	} else if modelCacheSvc != nil && appCallers != nil {
+		appAddr := os.Getenv("STATION_APP_INSTANCE_ADDR")
+		if appAddr == "" {
+			appAddr = "127.0.0.1:5055"
+		}
+		appInstanceServer = &http.Server{
+			Addr:              appAddr,
+			Handler:           modelcache.AppHandler{StationID: station, Callers: appCallers, Service: modelCacheSvc},
+			ReadHeaderTimeout: 3 * time.Second,
+			ReadTimeout:       10 * time.Second,
+			WriteTimeout:      25 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			MaxHeaderBytes:    16 << 10,
+		}
+		go func() { done <- appInstanceServer.ListenAndServe() }()
+	}
+	var gpuSchedulerServer *http.Server
+	if gpuSvc != nil {
+		gpuAddr := gpuAddrEnv
+		if gpuAddr == "" {
+			gpuAddr = "0.0.0.0:5056"
+		}
+		recCtx, recCancel := context.WithTimeout(ctx, 10*time.Second)
+		_ = gpuSvc.ReconcileRestart(recCtx, scheduler.RestartObservation{})
+		recCancel()
+
+		gpuSchedulerServer = &http.Server{
+			Addr:              gpuAddr,
+			Handler:           scheduler.Handler{Service: gpuSvc},
+			ReadHeaderTimeout: 3 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      25 * time.Second,
+			IdleTimeout:       30 * time.Second,
+			MaxHeaderBytes:    16 << 10,
+		}
+		go func() { done <- gpuSchedulerServer.ListenAndServe() }()
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sCtx, sCancel := context.WithTimeout(ctx, 10*time.Second)
+					_ = gpuSvc.ReconcileRestart(sCtx, scheduler.RestartObservation{})
+					sCancel()
+				}
+			}
+		}()
 	}
 	var instanceServer *http.Server
 	if profiles != nil {
@@ -355,8 +628,47 @@ func run() int {
 		}
 		workspaceNamespaces = append(workspaceNamespaces, "verdantflare-app")
 		instanceService := &instances.Service{Pool: pool, Client: driver.Client, StationID: station, Namespaces: workspaceNamespaces, Profiles: profiles, ProfileHistory: profileHistory, CapacityClaims: capacityClaims, Observer: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkingCopyObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkerObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, DrainObserver: instances.HTTPObserver{Client: instances.InternalHTTPClient()}, WorkspaceCleaner: cleaner}
-		instanceServer = &http.Server{Addr: instanceAddr, Handler: instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+		var adminRootHandler http.Handler = instances.Handler{Service: instanceService, Token: os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")}
+		if modelCacheSvc != nil {
+			adminModelToken := strings.TrimSpace(os.Getenv("STATION_MODEL_CACHE_CONTROL_TOKEN"))
+			if adminModelToken == "" {
+				adminModelToken = os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")
+			}
+			adminRootHandler = multiplexModelCacheHandler(adminRootHandler, modelcache.AdminHandler{Service: modelCacheSvc, Token: adminModelToken})
+		}
+		instanceServer = &http.Server{Addr: instanceAddr, Handler: adminRootHandler, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
 		go func() { done <- instanceServer.ListenAndServe() }()
+	} else if modelCacheSvc != nil {
+		adminModelToken := strings.TrimSpace(os.Getenv("STATION_MODEL_CACHE_CONTROL_TOKEN"))
+		if adminModelToken == "" {
+			adminModelToken = os.Getenv("STATION_INSTANCE_CONTROL_TOKEN")
+		}
+		if len(adminModelToken) >= 32 {
+			instanceAddr := os.Getenv("STATION_INSTANCE_ADDR")
+			if instanceAddr == "" {
+				instanceAddr = "127.0.0.1:5054"
+			}
+			instanceServer = &http.Server{Addr: instanceAddr, Handler: modelcache.AdminHandler{Service: modelCacheSvc, Token: adminModelToken}, ReadHeaderTimeout: 3 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 25 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10}
+			go func() { done <- instanceServer.ListenAndServe() }()
+		}
+	}
+	if modelCacheSvc != nil {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					// ReconcileExpiredPins partitions this round deadline into independent
+					// reserved/active phase budgets + per-RPC timeouts + DB touch headroom.
+					rCtx, rCancel := context.WithTimeout(ctx, 12*time.Second)
+					_, _, _ = modelCacheSvc.ReconcileExpiredPins(rCtx)
+					rCancel()
+				}
+			}
+		}()
 	}
 	if stateObserver != nil {
 		observeCtx, stopObserver := context.WithCancel(ctx)
@@ -388,6 +700,12 @@ func run() int {
 	}
 	if appInstanceServer != nil {
 		_ = appInstanceServer.Shutdown(shutdown)
+	}
+	if gpuSchedulerServer != nil {
+		_ = gpuSchedulerServer.Shutdown(shutdown)
+	}
+	if modelCacheSvc != nil {
+		modelCacheSvc.WaitBackgroundDownloads()
 	}
 	return result
 }

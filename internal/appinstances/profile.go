@@ -20,27 +20,42 @@ var ErrBusy = errors.New("INSTANCE_RESOURCE_IN_USE")
 var ErrCapacity = errors.New("INSTANCE_STORAGE_CAPACITY_UNAVAILABLE")
 
 const TemplateVersion = "app-worker-cpu-v1"
+const GPUTemplateVersion = "app-worker-gpu-shared-v1"
+const SharedModelsMountPath = "/models"
+
+type ReadonlyMount struct {
+	Name      string `json:"name"`
+	ClaimName string `json:"claim_name"`
+	MountPath string `json:"mount_path"`
+}
 
 type Profile struct {
-	AppID              string            `json:"app_id"`
-	AppVersion         string            `json:"app_version"`
-	ID                 string            `json:"profile_id"`
-	TemplateVersion    string            `json:"template_version"`
-	Namespace          string            `json:"namespace"`
-	NodeName           string            `json:"node_name"`
-	Pool               string            `json:"pool"`
-	Claims             []string          `json:"claims"`
-	StorageBytes       int64             `json:"storage_bytes"`
-	Image              string            `json:"image"`
-	Port               int32             `json:"port"`
-	RunAsUser          int64             `json:"run_as_user"`
-	CPURequestMillis   int64             `json:"cpu_request_millis"`
-	CPULimitMillis     int64             `json:"cpu_limit_millis"`
-	MemoryRequestBytes int64             `json:"memory_request_bytes"`
-	MemoryLimitBytes   int64             `json:"memory_limit_bytes"`
-	Env                map[string]string `json:"env"`
-	Bindings           map[string]string `json:"bindings"`
+	AppID               string            `json:"app_id"`
+	AppVersion          string            `json:"app_version"`
+	ID                  string            `json:"profile_id"`
+	TemplateVersion     string            `json:"template_version"`
+	Namespace           string            `json:"namespace"`
+	NodeName            string            `json:"node_name"`
+	Pool                string            `json:"pool"`
+	Claims              []string          `json:"claims"`
+	StorageBytes        int64             `json:"storage_bytes"`
+	Image               string            `json:"image"`
+	Port                int32             `json:"port"`
+	RunAsUser           int64             `json:"run_as_user"`
+	CPURequestMillis    int64             `json:"cpu_request_millis"`
+	CPULimitMillis      int64             `json:"cpu_limit_millis"`
+	MemoryRequestBytes  int64             `json:"memory_request_bytes"`
+	MemoryLimitBytes    int64             `json:"memory_limit_bytes"`
+	GPUCount            int64             `json:"gpu_count,omitempty"`
+	ShmSizeBytes        int64             `json:"shm_size_bytes,omitempty"`
+	SchedulerSecretName string            `json:"scheduler_secret_name,omitempty"`
+	SchedulerSecretKey  string            `json:"scheduler_secret_key,omitempty"`
+	ReadonlyMounts      []ReadonlyMount   `json:"readonly_mounts,omitempty"`
+	Env                 map[string]string `json:"env"`
+	Bindings            map[string]string `json:"bindings"`
 }
+
+var secretKeyPattern = regexp.MustCompile(`^[-._a-zA-Z0-9]{1,253}$`)
 
 var version = regexp.MustCompile(`^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 var imageVersion = regexp.MustCompile(`^[a-z0-9][a-z0-9./:_-]*:(?:[a-z0-9][a-z0-9._-]*-)?v?(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`)
@@ -60,7 +75,8 @@ func (p Profile) Hash() string {
 	return string(out)
 }
 func (p Profile) Valid() bool {
-	if !label(p.AppID) || !version.MatchString(p.AppVersion) || !label(p.ID) || p.TemplateVersion != TemplateVersion ||
+	if !label(p.AppID) || !version.MatchString(p.AppVersion) || !label(p.ID) ||
+		(p.TemplateVersion != TemplateVersion && p.TemplateVersion != GPUTemplateVersion) ||
 		!label(p.Namespace) || p.Namespace == "default" || strings.HasPrefix(p.Namespace, "kube-") ||
 		p.NodeName == "" || len(validation.IsDNS1123Subdomain(p.NodeName)) != 0 || !label(p.Pool) || len(p.Claims) == 0 || len(p.Claims) > 1000 ||
 		p.StorageBytes < 1 || p.StorageBytes > 1<<50 || !imageVersion.MatchString(p.Image) || len(p.Image) > 512 || p.Port < 1024 || p.Port > 65535 ||
@@ -69,12 +85,39 @@ func (p Profile) Valid() bool {
 		p.Env == nil || len(p.Env) > 64 || len(p.Bindings) != 8 {
 		return false
 	}
+	if p.TemplateVersion == TemplateVersion {
+		if p.GPUCount != 0 || p.ShmSizeBytes != 0 || p.SchedulerSecretName != "" || p.SchedulerSecretKey != "" || len(p.ReadonlyMounts) != 0 {
+			return false
+		}
+	} else {
+		if p.GPUCount < 1 || p.GPUCount > 2 || (p.ShmSizeBytes != 0 && (p.ShmSizeBytes < 64<<20 || p.ShmSizeBytes > 64<<30)) || len(p.ReadonlyMounts) > 8 {
+			return false
+		}
+		if (p.SchedulerSecretName == "") != (p.SchedulerSecretKey == "") {
+			return false
+		}
+		if p.SchedulerSecretName != "" && (len(validation.IsDNS1123Subdomain(p.SchedulerSecretName)) != 0 || !secretKeyPattern.MatchString(p.SchedulerSecretKey)) {
+			return false
+		}
+	}
 	seen := map[string]bool{}
 	for _, claim := range p.Claims {
 		if claim == "" || len(validation.IsDNS1123Subdomain(claim)) != 0 || seen[claim] {
 			return false
 		}
 		seen[claim] = true
+	}
+	seenMountNames := map[string]bool{"workspace": true, "tmp": true, "shm": true}
+	seenMountPaths := map[string]bool{"/workspace": true, "/tmp": true, "/dev/shm": true}
+	for _, rm := range p.ReadonlyMounts {
+		if !label(rm.Name) || seenMountNames[rm.Name] ||
+			rm.ClaimName == "" || len(validation.IsDNS1123Subdomain(rm.ClaimName)) != 0 || seen[rm.ClaimName] ||
+			rm.MountPath != SharedModelsMountPath || seenMountPaths[rm.MountPath] {
+			return false
+		}
+		seenMountNames[rm.Name] = true
+		seen[rm.ClaimName] = true
+		seenMountPaths[rm.MountPath] = true
 	}
 	sources := map[string]bool{}
 	for key, value := range p.Bindings {

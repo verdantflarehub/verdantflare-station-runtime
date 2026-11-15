@@ -28,15 +28,25 @@ func journalFixture(t *testing.T) (*Journal, Run, Profile, *fake.Clientset) {
 	t.Helper()
 	dsn := os.Getenv("STATION_TEST_DATABASE_URL")
 	if dsn == "" {
+		if os.Getenv("VERDANTFLARE_REQUIRE_TEST_DB") == "1" {
+			t.Fatal("STATION_TEST_DATABASE_URL required when VERDANTFLARE_REQUIRE_TEST_DB=1")
+		}
 		t.Skip("STATION_TEST_DATABASE_URL required; run database integration on 5090 dev")
 	}
 	in, p, pvc, pv := fixture()
 	ctx := context.Background()
-	admin, e := pgxpool.New(ctx, dsn)
+	adminCfg, e := pgxpool.ParseConfig(dsn)
 	if e != nil {
 		t.Fatal("invalid isolated test database configuration")
 	}
-	name := "appinstance_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	if strings.EqualFold(strings.TrimSpace(adminCfg.ConnConfig.Database), "station") {
+		t.Fatal("refusing to connect test admin pool to live 'station' database")
+	}
+	admin, e := pgxpool.NewWithConfig(ctx, adminCfg)
+	if e != nil {
+		t.Fatal("invalid isolated test database configuration")
+	}
+	name := "station_gpu_sched_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:24]
 	if _, e = admin.Exec(ctx, "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); e != nil {
 		admin.Close()
 		t.Fatal(e)
@@ -49,7 +59,7 @@ func journalFixture(t *testing.T) (*Journal, Run, Profile, *fake.Clientset) {
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		_, e := admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{name}.Sanitize())
+		_, e := admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{name}.Sanitize()+" WITH (FORCE)")
 		admin.Close()
 		if e != nil {
 			t.Error(e)

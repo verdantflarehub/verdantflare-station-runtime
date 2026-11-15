@@ -14,16 +14,32 @@ import (
 )
 
 type Observation struct {
-	PodUID     string `json:"pod_uid"`
-	ServiceUID string `json:"service_uid"`
-	SecretUID  string `json:"secret_uid"`
-	PodReady   bool   `json:"pod_ready"`
-	BootID     string `json:"boot_id,omitempty"`
-	Endpoint   string `json:"-"`
+	PodUID      string `json:"pod_uid"`
+	ServiceUID  string `json:"service_uid"`
+	SecretUID   string `json:"secret_uid"`
+	ContainerID string `json:"container_id,omitempty"`
+	PodReady    bool   `json:"pod_ready"`
+	BootID      string `json:"boot_id,omitempty"`
+	Endpoint    string `json:"-"`
+}
+
+func validContainerID(value string) bool {
+	if len(value) == 0 || len(value) > 256 {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] <= 32 || value[i] > 126 {
+			return false
+		}
+	}
+	return true
 }
 
 func (o Observation) valid() bool {
 	if o.BootID != "" && (!validBoot(o.BootID) || o.PodUID == "") {
+		return false
+	}
+	if o.ContainerID != "" && (o.PodUID == "" || !validContainerID(o.ContainerID)) {
 		return false
 	}
 	for _, uid := range []string{o.PodUID, o.ServiceUID, o.SecretUID} {
@@ -164,6 +180,20 @@ func ObserveWorker(ctx context.Context, client kubernetes.Interface, in Run, p P
 	}
 	out := Observation{PodUID: string(pod.UID), ServiceUID: string(current.UID), SecretUID: string(secret.UID),
 		Endpoint: fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svc.Name, p.Namespace, p.Port)}
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.Name == "worker" && validContainerID(cs.ContainerID) {
+			out.ContainerID = cs.ContainerID
+			break
+		}
+	}
+	if expected.ContainerID != "" {
+		if out.ContainerID != "" && out.ContainerID != expected.ContainerID {
+			return Observation{}, ErrBinding
+		}
+		if out.ContainerID == "" {
+			out.ContainerID = expected.ContainerID
+		}
+	}
 	if pod.Status.Phase == corev1.PodRunning && pod.Spec.NodeName == p.NodeName {
 		for _, c := range pod.Status.Conditions {
 			if c.Type == corev1.PodReady && c.Status == corev1.ConditionTrue {

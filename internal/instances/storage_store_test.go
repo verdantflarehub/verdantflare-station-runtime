@@ -20,6 +20,9 @@ func workspaceDB(t *testing.T, in Identity) *pgxpool.Pool {
 	t.Helper()
 	dsn := os.Getenv("STATION_TEST_DATABASE_URL")
 	if dsn == "" {
+		if os.Getenv("VERDANTFLARE_REQUIRE_TEST_DB") == "1" {
+			t.Fatal("STATION_TEST_DATABASE_URL required when VERDANTFLARE_REQUIRE_TEST_DB=1")
+		}
 		t.Skip("STATION_TEST_DATABASE_URL required for PostgreSQL integration")
 	}
 	ctx := context.Background()
