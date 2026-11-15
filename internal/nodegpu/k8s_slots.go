@@ -170,6 +170,60 @@ func (c *PodContainerCache) Lookup(podUID, containerHint string) string {
 	return ""
 }
 
+func (c *PodContainerCache) HasContainer(podUID, containerID string) bool {
+	if c == nil {
+		return false
+	}
+	cleanPod := normalizePodUID(podUID)
+	cleanCID := strings.ToLower(NormalizeContainerID(containerID))
+	if cleanPod == "" || strings.Contains(cleanPod, "/") || !isHex64ContainerID(cleanCID) {
+		return false
+	}
+	_ = c.Lookup(cleanPod, "")
+	c.mu.Lock()
+	rec, ok := c.byPod[cleanPod]
+	c.mu.Unlock()
+	if !ok {
+		return false
+	}
+	for _, cid := range rec.ByName {
+		if strings.ToLower(NormalizeContainerID(cid)) == cleanCID {
+			return true
+		}
+	}
+	return false
+}
+
+func (k KubeNodeSlotCounter) CheckPodDeletedAndObserved(ctx context.Context, podUID, containerID string) (bool, error) {
+	cleanPod := normalizePodUID(podUID)
+	cleanCID := strings.ToLower(NormalizeContainerID(containerID))
+	if cleanPod == "" || !isHex64ContainerID(cleanCID) || k.Cache == nil || k.Client == nil {
+		return false, nil
+	}
+	if !k.Cache.HasContainer(cleanPod, cleanCID) {
+		return false, nil
+	}
+	ns := strings.TrimSpace(k.Namespace)
+	if ns == "" {
+		ns = "verdantflare-app"
+	}
+	pods, err := k.Client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false, err
+	}
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		k.Cache.RecordPod(pod)
+		if normalizePodUID(string(pod.UID)) == cleanPod {
+			if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
+				return true, nil
+			}
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
 type KubeNodeSlotCounter struct {
 	Client    kubernetes.Interface
 	Namespace string

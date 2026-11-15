@@ -1199,4 +1199,32 @@ func TestVerifyTerminatedResolvesPodScopedContainerID(t *testing.T) {
 	if err != nil || !resExit.Verified || !resExit.ContainerExited {
 		t.Fatalf("expected post-exit pod-scoped container_id to verify via PodContainerCache + CRI, got %+v (%v)", resExit, err)
 	}
+
+	// 4. Simulate Deployment scale 1 -> 0 where Kubelet immediately calls CRI RemoveContainer
+	// BEFORE any tombstone was written: observed PodContainerCache + deleted K8s Pod + CRI ErrContainerNotFound + 0 /proc PIDs verifies cleanly,
+	// whereas an unobserved container_id still fails closed!
+	delete(criSrc.status, hexCID)
+	_ = os.Remove(filepath.Join(tombDir, hexCID+".json"))
+	resScaleZero, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID:     "node-5090-01",
+		GPUUUID:     "GPU-1",
+		PodUID:      podUID,
+		ContainerID: podScopedCID,
+		BootID:      "boot-private-ns-1",
+		Mode:        "container_exited",
+	})
+	if err != nil || !resScaleZero.Verified || !resScaleZero.ContainerExited {
+		t.Fatalf("expected post-DeletePod CRI RemoveContainer to verify via observed PodContainerCache + deleted K8s Pod, got %+v (%v)", resScaleZero, err)
+	}
+	_, errNeverObserved := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID:     "node-5090-01",
+		GPUUUID:     "GPU-1",
+		PodUID:      "99999999-8888-4777-8666-555555555555",
+		ContainerID: strings.Repeat("d", 64),
+		BootID:      "boot-private-ns-1",
+		Mode:        "container_exited",
+	})
+	if !errors.Is(errNeverObserved, scheduler.ErrNodeStateUnknown) {
+		t.Fatalf("expected unobserved missing container to fail closed, got %v", errNeverObserved)
+	}
 }

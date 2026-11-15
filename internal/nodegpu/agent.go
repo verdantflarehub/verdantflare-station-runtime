@@ -34,6 +34,10 @@ type PodContainerIDResolver interface {
 	ResolvePodContainerID(ctx context.Context, podUID, containerHint string) (string, error)
 }
 
+type PodDeletionObserver interface {
+	CheckPodDeletedAndObserved(ctx context.Context, podUID, containerID string) (bool, error)
+}
+
 type Agent struct {
 	NodeUID             string
 	NodeName            string
@@ -331,10 +335,51 @@ func (a *Agent) VerifyTerminated(ctx context.Context, req scheduler.VerifyTermin
 		if errors.Is(criErr, ErrContainerNotFound) {
 			tombStore := TombstoneStore{Dir: a.TombstoneDir}
 			tomb, ok, tErr := tombStore.Load(targetCID)
-			if tErr != nil || !ok {
+			if tErr != nil {
 				return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
 			}
-			criStatus = tomb
+			if ok {
+				criStatus = tomb
+			} else if mode == "container_exited" && isHex64ContainerID(targetCID) && a.SlotCounter != nil {
+				// When Kubernetes deletes a Pod (e.g. Deployment scale 1 -> 0), Kubelet invokes CRI RemoveContainer
+				// immediately after StopContainer. If PodContainerCache durably observed (targetPodUID, targetCID)
+				// on this node, Kubernetes confirms the Pod no longer exists, CRI confirms ErrContainerNotFound,
+				// and host /proc has zero surviving processes for targetPodUID/targetCID, synthesize & persist tombstone.
+				hasLiveMatchingProc := false
+				for _, p := range procs {
+					if p.Comm == "pause" || strings.HasPrefix(p.Cmdline, "/pause") {
+						continue
+					}
+					if p.PodUID == targetPodUID || p.ContainerID == targetCID {
+						hasLiveMatchingProc = true
+						break
+					}
+				}
+				var deletedAndObserved bool
+				if !hasLiveMatchingProc {
+					if delObs, okObs := a.SlotCounter.(PodDeletionObserver); okObs {
+						if dOK, dErr := delObs.CheckPodDeletedAndObserved(ctx, targetPodUID, targetCID); dErr == nil && dOK {
+							deletedAndObserved = true
+						}
+					}
+				}
+				if !deletedAndObserved {
+					return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+				}
+				criStatus = CRIContainerStatus{
+					ContainerID: targetCID,
+					PodUID:      targetPodUID,
+					State:       "CONTAINER_EXITED",
+					Exited:      true,
+					FinishedAt:  time.Now().UTC().UnixNano(),
+					Tombstone:   true,
+				}
+				if a.TombstoneDir != "" {
+					_ = tombStore.SaveExited(criStatus)
+				}
+			} else {
+				return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+			}
 		} else {
 			return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
 		}
@@ -508,7 +553,7 @@ func (a *Agent) VerifyTerminated(ctx context.Context, req scheduler.VerifyTermin
 		residentProcsValid := true
 		if supervisorVerified {
 			allowedHostPIDs[resolvedSup.PID] = true
-			if len(req.ResidentProcs) > 32 {
+			if len(req.ResidentProcs) > 128 {
 				residentProcsValid = false
 			} else {
 				for _, rp := range req.ResidentProcs {
@@ -652,8 +697,10 @@ func (a *Agent) BuildTelemetryReport(ctx context.Context) (scheduler.NodeTelemet
 
 	var allocSlots, scalingSlots, unschedPending int
 	var activePods []scheduler.ActiveGPUPodInfo
+	hasDetailedPods := false
 	if a.SlotCounter != nil {
 		if detailed, ok := a.SlotCounter.(DetailedK8sPodObserver); ok {
+			hasDetailedPods = true
 			obs, sErr := detailed.ObserveNamespaceGPUPods(ctx, a.NodeName)
 			if sErr != nil {
 				rep.AgentHealthy = false
@@ -719,6 +766,88 @@ func (a *Agent) BuildTelemetryReport(ctx context.Context) (scheduler.NodeTelemet
 		})
 	}
 
+	knownSet := make(map[string]bool, len(snap.Devices))
+	for _, dev := range snap.Devices {
+		knownSet[dev.GPUUUID] = true
+	}
+
+	podGPUOrder := make(map[string][]string)
+	podGPUSeen := make(map[string]map[string]bool)
+	addPodGPU := func(podUID, gpuUUID string) {
+		pUID := normalizePodUID(podUID)
+		gUUID := strings.TrimSpace(gpuUUID)
+		if pUID == "" || !knownSet[gUUID] {
+			return
+		}
+		if podGPUSeen[pUID] == nil {
+			podGPUSeen[pUID] = make(map[string]bool)
+		}
+		if !podGPUSeen[pUID][gUUID] {
+			podGPUSeen[pUID][gUUID] = true
+			podGPUOrder[pUID] = append(podGPUOrder[pUID], gUUID)
+		}
+	}
+	for _, p := range procs {
+		if p.PodUID == "" {
+			continue
+		}
+		for _, visGPU := range p.VisibleGPUUUIDs {
+			addPodGPU(p.PodUID, visGPU)
+		}
+	}
+	for gpuUUID, attrList := range attrByGPU {
+		for _, ap := range attrList {
+			addPodGPU(ap.PodUID, gpuUUID)
+		}
+	}
+
+	allocByGPU := make(map[string]int, len(snap.Devices))
+	scalingByGPU := make(map[string]int, len(snap.Devices))
+	podsByGPU := make(map[string][]scheduler.ActiveGPUPodInfo, len(snap.Devices))
+	var fallbackAlloc, fallbackScaling int
+	var fallbackPods []scheduler.ActiveGPUPodInfo
+
+	if hasDetailedPods && len(snap.Devices) > 0 {
+		for _, ap := range activePods {
+			if strings.TrimSpace(ap.NodeName) == "" {
+				fallbackPods = append(fallbackPods, ap)
+				continue
+			}
+			mapped := podGPUOrder[normalizePodUID(ap.PodUID)]
+			isPending := strings.EqualFold(strings.TrimSpace(ap.Phase), "Pending")
+			if len(mapped) == 0 {
+				if isPending {
+					fallbackScaling += ap.GPUSlots
+				} else {
+					fallbackAlloc += ap.GPUSlots
+				}
+				fallbackPods = append(fallbackPods, ap)
+				continue
+			}
+			sort.Strings(mapped)
+			remaining := ap.GPUSlots
+			for i, gUUID := range mapped {
+				share := 0
+				if remaining > 0 {
+					if i == len(mapped)-1 {
+						share = remaining
+					} else {
+						share = 1
+					}
+					remaining -= share
+				}
+				if isPending {
+					scalingByGPU[gUUID] += share
+				} else {
+					allocByGPU[gUUID] += share
+				}
+				podCopy := ap
+				podCopy.GPUSlots = share
+				podsByGPU[gUUID] = append(podsByGPU[gUUID], podCopy)
+			}
+		}
+	}
+
 	known := make([]string, 0, len(snap.Devices))
 	for idx, dev := range snap.Devices {
 		known = append(known, dev.GPUUUID)
@@ -726,8 +855,17 @@ func (a *Agent) BuildTelemetryReport(ctx context.Context) (scheduler.NodeTelemet
 		cardScaling := 0
 		cardUnsched := 0
 		var cardPods []scheduler.ActiveGPUPodInfo
-		// Report node-wide K8s GPU slots on index 0 so node sum equals total K8s GPU requests without double counting.
-		if idx == 0 {
+		if hasDetailedPods {
+			cardAlloc = allocByGPU[dev.GPUUUID]
+			cardScaling = scalingByGPU[dev.GPUUUID]
+			cardPods = podsByGPU[dev.GPUUUID]
+			if idx == 0 {
+				cardAlloc += fallbackAlloc
+				cardScaling += fallbackScaling
+				cardUnsched = unschedPending
+				cardPods = append(cardPods, fallbackPods...)
+			}
+		} else if idx == 0 {
 			cardAlloc = allocSlots
 			cardScaling = scalingSlots
 			cardUnsched = unschedPending

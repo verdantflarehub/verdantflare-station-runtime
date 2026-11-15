@@ -449,7 +449,7 @@ func validateWarmSettledProof(
 	if rawProcs, hasProcs := proof["resident_procs"]; hasProcs && rawProcs != nil {
 		switch typed := rawProcs.(type) {
 		case []ResidentProcIdentity:
-			if len(typed) > 32 {
+			if len(typed) > 128 {
 				return verifiedEpochSeal{}, false
 			}
 			for _, rp := range typed {
@@ -459,7 +459,7 @@ func validateWarmSettledProof(
 				residentProcs = append(residentProcs, rp)
 			}
 		case []any:
-			if len(typed) > 32 {
+			if len(typed) > 128 {
 				return verifiedEpochSeal{}, false
 			}
 			for _, item := range typed {
@@ -2849,6 +2849,16 @@ func (s *Service) ReportResidency(ctx context.Context, caller CallerIdentity, re
 	req.PodUID = strings.TrimSpace(req.PodUID)
 	req.BootID = strings.TrimSpace(req.BootID)
 	req.GPUUUID = strings.TrimSpace(req.GPUUUID)
+	if req.NodeUID == "" && req.GPUUUID != "" && s.Pool != nil {
+		_ = s.Pool.QueryRow(ctx, `
+			SELECT node_uid
+			  FROM station.gpu_physical_cards
+			 WHERE station_id = $1 AND gpu_uuid = $2
+			 ORDER BY updated_at DESC
+			 LIMIT 1
+		`, s.StationID, req.GPUUUID).Scan(&req.NodeUID)
+		req.NodeUID = strings.TrimSpace(req.NodeUID)
+	}
 	if req.InstanceID == "" || req.NodeUID == "" || req.PodUID == "" || req.BootID == "" || req.GPUUUID == "" {
 		return ErrInvalidRequest
 	}

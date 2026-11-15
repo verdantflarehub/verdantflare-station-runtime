@@ -310,22 +310,24 @@ func parseNvidiaSMIProcsCSV(raw []byte) ([]GPUProcessObservation, error) {
 var (
 	podUIDCgroupRe      = regexp.MustCompile(`pod([0-9a-fA-F]{8}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{4}[-_][0-9a-fA-F]{12})`)
 	containerIDCgroupRe = regexp.MustCompile(`(?:cri-containerd-|docker-|crio-|/)([0-9a-fA-F]{64})(?:\.scope|$|/)`)
+	gpuDeviceUUIDRe     = regexp.MustCompile(`^GPU-[0-9a-fA-F-]{36}$`)
 )
 
 type ProcEntry struct {
-	PID            int    `json:"pid"`
-	PPID           int    `json:"ppid"`
-	StarttimeTicks uint64 `json:"starttime_ticks"`
-	State          string `json:"state"`
-	Comm           string `json:"comm"`
-	Cmdline        string `json:"cmdline"`
-	PodUID         string `json:"pod_uid,omitempty"`
-	ContainerID    string `json:"container_id,omitempty"`
-	NSPIDs         []int  `json:"ns_pids,omitempty"`
-	PIDNamespace   string `json:"pid_namespace,omitempty"`
-	HasNvidiaFD    bool   `json:"has_nvidia_fd,omitempty"`
-	GPUEpochEnv    *int64 `json:"gpu_epoch_env,omitempty"`
-	BootIDEnv      string `json:"boot_id_env,omitempty"`
+	PID             int      `json:"pid"`
+	PPID            int      `json:"ppid"`
+	StarttimeTicks  uint64   `json:"starttime_ticks"`
+	State           string   `json:"state"`
+	Comm            string   `json:"comm"`
+	Cmdline         string   `json:"cmdline"`
+	PodUID          string   `json:"pod_uid,omitempty"`
+	ContainerID     string   `json:"container_id,omitempty"`
+	NSPIDs          []int    `json:"ns_pids,omitempty"`
+	PIDNamespace    string   `json:"pid_namespace,omitempty"`
+	HasNvidiaFD     bool     `json:"has_nvidia_fd,omitempty"`
+	GPUEpochEnv     *int64   `json:"gpu_epoch_env,omitempty"`
+	BootIDEnv       string   `json:"boot_id_env,omitempty"`
+	VisibleGPUUUIDs []string `json:"visible_gpu_uuids,omitempty"`
 }
 
 func (p ProcEntry) InnermostPID() int {
@@ -378,9 +380,22 @@ func extractCgroupIdentity(cgroupContent string) (podUID, containerID string) {
 	return podUID, containerID
 }
 
-func parseProcEnviron(raw []byte) (gpuEpoch *int64, bootID string) {
+func parseProcEnviron(raw []byte) (gpuEpoch *int64, bootID string, visibleGPUs []string) {
 	if len(raw) == 0 {
-		return nil, ""
+		return nil, "", nil
+	}
+	seenGPU := map[string]bool{}
+	addVisibleGPU := func(val string) {
+		for _, tok := range strings.Split(val, ",") {
+			cand := strings.TrimSpace(tok)
+			if sep := strings.Index(cand, "::"); sep > 0 {
+				cand = strings.TrimSpace(cand[:sep])
+			}
+			if gpuDeviceUUIDRe.MatchString(cand) && !seenGPU[cand] {
+				seenGPU[cand] = true
+				visibleGPUs = append(visibleGPUs, cand)
+			}
+		}
 	}
 	for _, entry := range bytes.Split(raw, []byte{0}) {
 		kv := string(entry)
@@ -400,9 +415,13 @@ func parseProcEnviron(raw []byte) (gpuEpoch *int64, bootID string) {
 			if v != "" && bootID == "" {
 				bootID = v
 			}
+		case "NVIDIA_VISIBLE_DEVICES", "VF_VISIBLE_GPU_UUIDS", "COMFYUI_GPU_UUID", "BLENDER_GPU_UUID":
+			if v != "" && !strings.EqualFold(v, "all") && !strings.EqualFold(v, "none") && !strings.EqualFold(v, "void") {
+				addVisibleGPU(v)
+			}
 		}
 	}
-	return gpuEpoch, bootID
+	return gpuEpoch, bootID, visibleGPUs
 }
 
 func parseProcStatusNSPIDs(raw string) []int {
@@ -626,13 +645,14 @@ func (p ProcInspector) scan(requiredGPUPIDs []int, strict bool) ([]ProcEntry, er
 
 		var gpuEpoch *int64
 		var bootID string
+		var visibleGPUs []string
 		envBytes, envErr := os.ReadFile(filepath.Join(pidDir, "environ"))
 		if envErr != nil {
 			if strict && errors.Is(envErr, os.ErrPermission) && isTargetProc {
 				return nil, fmt.Errorf("%w: environ pid %d: %v", ErrProcInspectionIncomplete, pid, envErr)
 			}
 		} else {
-			gpuEpoch, bootID = parseProcEnviron(envBytes)
+			gpuEpoch, bootID, visibleGPUs = parseProcEnviron(envBytes)
 		}
 
 		hasNvidiaFD, fdErr := inspectNvidiaOpenFDs(pidDir, strict && isTargetProc)
@@ -642,19 +662,20 @@ func (p ProcInspector) scan(requiredGPUPIDs []int, strict bool) ([]ProcEntry, er
 
 		seenPIDs[pid] = true
 		out = append(out, ProcEntry{
-			PID:            pid,
-			PPID:           ppid,
-			StarttimeTicks: startTicks,
-			State:          state,
-			Comm:           comm,
-			Cmdline:        cmdline,
-			PodUID:         podUID,
-			ContainerID:    containerID,
-			NSPIDs:         nsPIDs,
-			PIDNamespace:   pidNamespace,
-			HasNvidiaFD:    hasNvidiaFD,
-			GPUEpochEnv:    gpuEpoch,
-			BootIDEnv:      bootID,
+			PID:             pid,
+			PPID:            ppid,
+			StarttimeTicks:  startTicks,
+			State:           state,
+			Comm:            comm,
+			Cmdline:         cmdline,
+			PodUID:          podUID,
+			ContainerID:     containerID,
+			NSPIDs:          nsPIDs,
+			PIDNamespace:    pidNamespace,
+			HasNvidiaFD:     hasNvidiaFD,
+			GPUEpochEnv:     gpuEpoch,
+			BootIDEnv:       bootID,
+			VisibleGPUUUIDs: visibleGPUs,
 		})
 	}
 	if strict {
