@@ -1,15 +1,111 @@
 package scheduler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"strconv"
 	"strings"
-
-	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
+	"unicode/utf8"
 )
 
 const maxBodyBytes = 1 << 20
+
+// DecodeJSONObject validates a bounded UTF-8 JSON object with no duplicate keys,
+// max nesting depth 32, DisallowUnknownFields(), and no trailing tokens, while
+// permitting explicit null / zero values on optional or pointer fields.
+func DecodeJSONObject(r io.Reader, limit int64, dst any) error {
+	if limit <= 0 {
+		return ErrInvalidRequest
+	}
+	b, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil || int64(len(b)) > limit || !utf8.Valid(b) {
+		return ErrInvalidRequest
+	}
+	scan := json.NewDecoder(bytes.NewReader(b))
+	scan.UseNumber()
+	first, err := scan.Token()
+	if err != nil || first != json.Delim('{') {
+		return ErrInvalidRequest
+	}
+	if err := scanJSONObjectRest(scan, 0); err != nil {
+		return ErrInvalidRequest
+	}
+	if _, err := scan.Token(); err != io.EOF {
+		return ErrInvalidRequest
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return ErrInvalidRequest
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func scanJSONObjectRest(d *json.Decoder, depth int) error {
+	if depth > 32 {
+		return ErrInvalidRequest
+	}
+	seen := make(map[string]bool)
+	for d.More() {
+		key, err := d.Token()
+		if err != nil {
+			return ErrInvalidRequest
+		}
+		name, ok := key.(string)
+		if !ok || seen[name] {
+			return ErrInvalidRequest
+		}
+		seen[name] = true
+		if err := scanJSONValue(d, depth+1); err != nil {
+			return err
+		}
+	}
+	end, err := d.Token()
+	if err != nil || end != json.Delim('}') {
+		return ErrInvalidRequest
+	}
+	return nil
+}
+
+func scanJSONValue(d *json.Decoder, depth int) error {
+	if depth > 32 {
+		return ErrInvalidRequest
+	}
+	t, err := d.Token()
+	if err != nil {
+		return ErrInvalidRequest
+	}
+	switch t {
+	case json.Delim('{'):
+		return scanJSONObjectRest(d, depth)
+	case json.Delim('['):
+		for d.More() {
+			if err := scanJSONValue(d, depth+1); err != nil {
+				return err
+			}
+		}
+		end, err := d.Token()
+		if err != nil || end != json.Delim(']') {
+			return ErrInvalidRequest
+		}
+	default:
+		if num, ok := t.(json.Number); ok {
+			if _, err := strconv.ParseFloat(num.String(), 64); err != nil {
+				return ErrInvalidRequest
+			}
+		}
+		if _, ok := t.(json.Delim); ok {
+			return ErrInvalidRequest
+		}
+	}
+	return nil
+}
 
 type Handler struct {
 	Service *Service
@@ -30,7 +126,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && path == "/internal/v1/gpu-scheduler/leases/acquire":
 		var req AcquireRequest
-		if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+		if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 			writeMappedError(w, ErrInvalidRequest)
 			return
 		}
@@ -65,7 +161,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			switch action {
 			case "heartbeat", "downgrade":
 				var req HeartbeatRequest
-				if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+				if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 					writeMappedError(w, ErrInvalidRequest)
 					return
 				}
@@ -87,7 +183,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			case "bind-target":
 				var req BindTargetRequest
-				if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+				if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 					writeMappedError(w, ErrInvalidRequest)
 					return
 				}
@@ -104,7 +200,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			case "release":
 				var req ReleaseRequest
-				if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+				if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 					writeMappedError(w, ErrInvalidRequest)
 					return
 				}
@@ -124,7 +220,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodPost && path == "/internal/v1/gpu-scheduler/residency/report":
 		var req ResidencyReportRequest
-		if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+		if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 			writeMappedError(w, ErrInvalidRequest)
 			return
 		}
@@ -145,7 +241,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			switch action {
 			case "evict":
 				var req ResidencyEvictRequest
-				if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+				if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 					writeMappedError(w, ErrInvalidRequest)
 					return
 				}
@@ -162,7 +258,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 			case "force-drain":
 				var req ResidencyForceDrainRequest
-				if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+				if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 					writeMappedError(w, ErrInvalidRequest)
 					return
 				}
@@ -182,7 +278,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodPost && path == "/internal/v1/gpu-scheduler/telemetry/report":
 		var rep NodeTelemetryReport
-		if strictjson.Decode(r.Body, maxBodyBytes, &rep) != nil {
+		if DecodeJSONObject(r.Body, maxBodyBytes, &rep) != nil {
 			writeMappedError(w, ErrInvalidRequest)
 			return
 		}
@@ -194,7 +290,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	case r.Method == http.MethodPost && path == "/internal/v1/gpu-scheduler/admin/admission-mode":
 		var req AdmissionModeRequest
-		if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+		if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 			writeMappedError(w, ErrInvalidRequest)
 			return
 		}
@@ -217,7 +313,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			LivePodUIDs map[string]bool `json:"live_pod_uids,omitempty"`
 			RunNonce    string          `json:"run_nonce,omitempty"`
 		}
-		if strictjson.Decode(r.Body, maxBodyBytes, &req) != nil {
+		if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
 			writeMappedError(w, ErrInvalidRequest)
 			return
 		}

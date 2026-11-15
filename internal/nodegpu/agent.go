@@ -19,7 +19,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/verdantflarehub/verdantflare-station-runtime/internal/scheduler"
-	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
 )
 
 type K8sSlotCounter interface {
@@ -652,7 +651,7 @@ func (a *Agent) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/internal/v1/node-gpu/verify-terminated" {
 		var req scheduler.VerifyTerminatedRequest
-		if strictjson.Decode(r.Body, 1<<20, &req) != nil {
+		if scheduler.DecodeJSONObject(r.Body, 1<<20, &req) != nil {
 			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error_code": "INVALID_REQUEST"})

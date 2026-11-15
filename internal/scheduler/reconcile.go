@@ -17,7 +17,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/verdantflarehub/verdantflare-station-runtime/internal/strictjson"
 )
 
 type LedgerSnapshot struct {
@@ -4838,7 +4837,7 @@ func (v HTTPNodeVerifier) VerifyTerminated(ctx context.Context, req VerifyTermin
 		return VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, ErrNodeStateUnknown
 	}
 	var out VerifyTerminatedResult
-	if err := strictjson.Decode(resp.Body, 1<<20, &out); err != nil {
+	if err := DecodeJSONObject(resp.Body, 1<<20, &out); err != nil {
 		return VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, err
 	}
 	if resp.StatusCode >= 500 {
