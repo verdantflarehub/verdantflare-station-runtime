@@ -651,9 +651,9 @@ func (s *Service) Evict(ctx context.Context, req EvictRequest) (EvictResponse, e
 	if req.StationID != "" && s.StationID != "" && req.StationID != s.StationID {
 		return EvictResponse{}, NewError(403, "PERMISSION_DENIED", "station_id mismatch")
 	}
-	return s.Store.EvictUnderLock(ctx, sha, s.now(), func(relViews []string, expectedCASInode *uint64) error {
+	return s.Store.EvictUnderLock(ctx, sha, s.now(), func(relViews []string, expectedCASInode *uint64, downloadFence int64) error {
 		s.fireHook(ctx, "during_evicting_unlink", map[string]string{"sha256": sha})
-		return EvictCASAndViews(s.RootDir, sha, relViews, expectedCASInode)
+		return EvictCASViewsAndStaging(s.RootDir, sha, relViews, expectedCASInode, downloadFence)
 	})
 }
 

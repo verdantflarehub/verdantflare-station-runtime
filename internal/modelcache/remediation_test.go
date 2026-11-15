@@ -736,7 +736,14 @@ func setupModelCachePGStore(t *testing.T) (*PGStore, string) {
 	}
 
 	ctx := context.Background()
-	admin, err := pgxpool.New(ctx, dsn)
+	adminCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.EqualFold(strings.TrimSpace(adminCfg.ConnConfig.Database), "station") {
+		t.Fatal("refusing to connect modelcache test admin pool to live 'station' database")
+	}
+	admin, err := pgxpool.NewWithConfig(ctx, adminCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -755,7 +762,7 @@ func setupModelCachePGStore(t *testing.T) (*PGStore, string) {
 	}
 	t.Cleanup(func() {
 		pool.Close()
-		_, dropErr := admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{dbName}.Sanitize())
+		_, dropErr := admin.Exec(context.Background(), "DROP DATABASE "+pgx.Identifier{dbName}.Sanitize()+" WITH (FORCE)")
 		admin.Close()
 		if dropErr != nil {
 			t.Error(dropErr)
@@ -2247,7 +2254,9 @@ func TestSlowTimeoutReservedGroupsNeverStarveActiveOrphansUnderBoundedContext(t 
 			}
 		}
 
-		// 3. Create 10 active terminal task_execution orphans!
+		// 3. Create 10 active terminal task_execution orphans (and measure 10 real store commits
+		// so tight phase budgets remain valid both for sub-ms MemoryStore and high-RTT remote PG)!
+		commitSampleStart := time.Now()
 		for i := 1; i <= 10; i++ {
 			rID := fmt.Sprintf("act-orphan-%03d", i)
 			if _, err := svc.ReservePins(ctx, ReservePinsRequest{
@@ -2272,14 +2281,25 @@ func TestSlowTimeoutReservedGroupsNeverStarveActiveOrphansUnderBoundedContext(t 
 				EntityID:      fmt.Sprintf("task-orphan-%03d", i),
 			}
 		}
+		tenTxDur := time.Since(commitSampleStart)
+		roundBudget := 220 * time.Millisecond
+		if tenTxDur > 30*time.Millisecond {
+			// Over remote/port-forwarded PostgreSQL, calibrate budgets from measured 10-tx latency so:
+			// (a) Phase 1 still genuinely exhausts after ~3-4 slow RPCs (well short of the 20 slow groups), and
+			// (b) Phase 2 has >= 2.5x the measured 10-tx DB RTT needed to release all 10 active orphans in Round 1.
+			phaseTarget := tenTxDur * 3
+			svc.ReconcilePerRPCTimeout = phaseTarget / 4
+			svc.ReconcileStoreOpTimeout = tenTxDur
+			roundBudget = phaseTarget * 9 / 4
+		}
 
 		// Advance clock past both TTL (30s) and ActiveTaskReconcileAge (30s).
 		now = now.Add(2 * time.Minute)
 
-		// Round 1 under a tight 220ms deadline (~99ms per phase, ~15ms per slow RPC -> ~6 slow RPCs time out,
-		// genuinely exhausting the reserved phase budget BEFORE reaching all 20 slow groups!):
+		// Round 1 under a tight bounded deadline (~3-6 slow RPCs time out, genuinely exhausting the
+		// reserved phase budget BEFORE reaching all 20 slow groups!):
 		// Downstream active phase MUST still run in Round 1 and release all 10 active orphans!
-		r1Ctx, r1Cancel := context.WithTimeout(ctx, 220*time.Millisecond)
+		r1Ctx, r1Cancel := context.WithTimeout(ctx, roundBudget)
 		_, rel1, err1 := svc.ReconcileExpiredPins(r1Ctx)
 		r1Cancel()
 		if err1 != nil {
@@ -2300,9 +2320,9 @@ func TestSlowTimeoutReservedGroupsNeverStarveActiveOrphansUnderBoundedContext(t 
 		// rotates timed-out slow groups behind untouched groups) until the 3 fast revoked groups past the
 		// 20 slow groups are reached and released!
 		totalReleased := rel1
-		for round := 2; round <= 8; round++ {
+		for round := 2; round <= 12; round++ {
 			now = now.Add(time.Second)
-			rCtx, rCancel := context.WithTimeout(ctx, 220*time.Millisecond)
+			rCtx, rCancel := context.WithTimeout(ctx, roundBudget)
 			_, relN, rErr := svc.ReconcileExpiredPins(rCtx)
 			rCancel()
 			if rErr != nil {

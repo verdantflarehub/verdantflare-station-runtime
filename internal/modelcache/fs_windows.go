@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"unsafe"
 
@@ -245,6 +246,59 @@ func (n *windowsNamespace) StatInDir(relDirSlash, baseName string) (FileIdentity
 	}
 	defer windows.CloseHandle(h)
 	return inspectHandleInfo(h, 0)
+}
+
+type nopInodePinCloser struct{}
+
+func (nopInodePinCloser) Close() error { return nil }
+
+// PinInodeForQuarantine returns the current FileIdentity without holding an open Win32
+// HANDLE across unlink/move: NTFS 64-bit FileIndex embeds the 16-bit MFT sequence number
+// (preventing recycled-record collisions natively), whereas holding an open Win32 HANDLE
+// would block concurrent DeleteFileW+CreateFileW with STATUS_DELETE_PENDING.
+func (n *windowsNamespace) PinInodeForQuarantine(relDirSlash, baseName string) (io.Closer, FileIdentity, error) {
+	id, err := n.StatInDir(relDirSlash, baseName)
+	if err != nil {
+		return nil, FileIdentity{}, err
+	}
+	return nopInodePinCloser{}, id, nil
+}
+
+func (n *windowsNamespace) ListDirNames(relDirSlash string) ([]string, error) {
+	clean, err := cleanRelUnderRoot(relDirSlash)
+	if err != nil {
+		return nil, err
+	}
+	dirFull, err := n.ensurePinnedDir(clean)
+	if err != nil {
+		return nil, err
+	}
+	pinnedH := n.dirHandles[clean]
+	var pinnedInfo windows.ByHandleFileInformation
+	if pErr := windows.GetFileInformationByHandle(pinnedH, &pinnedInfo); pErr != nil {
+		return nil, pErr
+	}
+	dirFile, oErr := os.Open(dirFull)
+	if oErr != nil {
+		return nil, oErr
+	}
+	defer dirFile.Close()
+	var iterInfo windows.ByHandleFileInformation
+	if iErr := windows.GetFileInformationByHandle(windows.Handle(dirFile.Fd()), &iterInfo); iErr != nil {
+		return nil, iErr
+	}
+	if iterInfo.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 ||
+		iterInfo.VolumeSerialNumber != pinnedInfo.VolumeSerialNumber ||
+		iterInfo.FileIndexHigh != pinnedInfo.FileIndexHigh ||
+		iterInfo.FileIndexLow != pinnedInfo.FileIndexLow {
+		return nil, NewError(500, "STORAGE_IO_ERROR", "directory handle identity mismatch against pinned namespace directory")
+	}
+	names, rErr := dirFile.Readdirnames(-1)
+	if rErr != nil {
+		return nil, rErr
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (n *windowsNamespace) OpenReadOnlyInDir(relDirSlash, baseName string) (*os.File, FileIdentity, error) {

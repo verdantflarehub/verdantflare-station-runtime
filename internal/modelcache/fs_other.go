@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -82,6 +83,27 @@ func (n *otherNamespace) Close() {
 
 func (n *otherNamespace) StatInDir(relDirSlash, baseName string) (FileIdentity, error) {
 	return statBeneathNoFollow(n.rootDir, relDirSlash+"/"+baseName)
+}
+
+func (n *otherNamespace) ListDirNames(relDirSlash string) ([]string, error) {
+	if err := validateNoSymlinkDirChain(n.rootDir, relDirSlash); err != nil {
+		return nil, err
+	}
+	full := n.rootDir
+	if relDirSlash != "." && relDirSlash != "" {
+		full = filepath.Join(n.rootDir, filepath.FromSlash(relDirSlash))
+	}
+	dirFile, err := os.OpenFile(full, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer dirFile.Close()
+	names, rErr := dirFile.Readdirnames(-1)
+	if rErr != nil {
+		return nil, rErr
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (n *otherNamespace) OpenReadOnlyInDir(relDirSlash, baseName string) (*os.File, FileIdentity, error) {

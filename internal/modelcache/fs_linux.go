@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -230,6 +231,32 @@ func (n *linuxNamespace) StatInDir(relDirSlash, baseName string) (FileIdentity, 
 		return FileIdentity{}, fErr
 	}
 	return statToIdentityLinux(st)
+}
+
+// PinInodeForQuarantine holds an O_RDONLY|O_NOFOLLOW FD open on (relDirSlash, baseName)
+// across quarantine move + identity confirmation so Linux VFS cannot recycle st_ino if
+// the directory entry is concurrently unlinked and recreated between check and move.
+func (n *linuxNamespace) PinInodeForQuarantine(relDirSlash, baseName string) (io.Closer, FileIdentity, error) {
+	return n.OpenReadOnlyInDir(relDirSlash, baseName)
+}
+
+func (n *linuxNamespace) ListDirNames(relDirSlash string) ([]string, error) {
+	dfd, err := n.pinnedDirFD(relDirSlash)
+	if err != nil {
+		return nil, err
+	}
+	iterFD, oErr := unix.Openat(dfd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if oErr != nil {
+		return nil, oErr
+	}
+	dirFile := os.NewFile(uintptr(iterFD), relDirSlash)
+	defer dirFile.Close()
+	names, rErr := dirFile.Readdirnames(-1)
+	if rErr != nil {
+		return nil, rErr
+	}
+	sort.Strings(names)
+	return names, nil
 }
 
 func (n *linuxNamespace) OpenReadOnlyInDir(relDirSlash, baseName string) (*os.File, FileIdentity, error) {

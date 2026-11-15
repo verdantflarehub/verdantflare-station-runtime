@@ -922,3 +922,98 @@ func TestHTTPAdminAndAppHandlers(t *testing.T) {
 		t.Fatalf("host path leaked in model.ensure response: %s", string(rawEns))
 	}
 }
+
+func TestEvictFailedModelCleansResidualStagingPart(t *testing.T) {
+	validBytes, validSHA := buildValidSafetensors(t, 256, nil)
+	const giB = int64(1024 * 1024 * 1024)
+	svc, _, _ := newTestService(t, 600*giB, nil)
+
+	halfLen := len(validBytes) / 2
+	svc.Downloader.TransportForTarget = func(_ VerifiedTarget) (http.RoundTripper, func(), error) {
+		rt := roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			h := make(http.Header)
+			h.Set("ETag", `"etag-interrupted"`)
+			return &http.Response{
+				StatusCode:    200,
+				ContentLength: int64(len(validBytes)),
+				Header:        h,
+				Body: io.NopCloser(io.MultiReader(
+					bytes.NewReader(validBytes[:halfLen]),
+					errReader{err: io.ErrUnexpectedEOF},
+				)),
+			}, nil
+		})
+		return rt, func() {}, nil
+	}
+
+	ctx := context.Background()
+	if err := svc.RegisterCatalogEntries(ctx, []CatalogEntry{{
+		ModelID:          "interrupted-lora-1_0",
+		CatalogCode:      "MDL-LORA-INT-001",
+		DisplayName:      "Interrupted LoRA 1.0",
+		Category:         "LORA",
+		Filename:         "interrupted.safetensors",
+		SHA256:           validSHA,
+		SizeBytes:        int64(len(validBytes)),
+		VRAMFootprintMiB: 256,
+		License:          "apache-2.0",
+		SourceURLs:       []string{"https://huggingface.co/interrupted.safetensors"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ensRes, err := svc.Ensure(ctx, EnsureRequest{
+		OrganizationID: "org-1",
+		ProjectID:      "proj-1",
+		PrincipalID:    "user-1",
+		IdempotencyKey: "idem-interrupted-1",
+		ModelID:        "interrupted-lora-1_0",
+	})
+	if err != nil {
+		t.Fatalf("Ensure interrupted download failed unexpectedly: %v", err)
+	}
+	if ensRes.Model.Status != StatusFailed || ensRes.Model.BytesDownloaded != int64(halfLen) {
+		t.Fatalf("expected failed status with residual BytesDownloaded=%d, got %+v", halfLen, ensRes.Model)
+	}
+	partPath := PartFilePath(svc.RootDir, validSHA, ensRes.Model.DownloadFence)
+	if st, stErr := os.Stat(partPath); stErr != nil || st.Size() != int64(halfLen) {
+		t.Fatalf("expected staging .part on disk at %s with size=%d, got st=%v err=%v", partPath, halfLen, st, stErr)
+	}
+
+	// Simulate >5 prior crash-takeover independent .part inodes (fences 2..8) and a residual .tmp view link (R2-M02).
+	var extraPartPaths []string
+	for f := int64(2); f <= 8; f++ {
+		p := PartFilePath(svc.RootDir, validSHA, f)
+		if err := os.WriteFile(p, validBytes[:halfLen], 0o600); err != nil {
+			t.Fatalf("seed extra staging .part %d: %v", f, err)
+		}
+		extraPartPaths = append(extraPartPaths, p)
+	}
+	residualTmpView := TempViewLinkPath(svc.RootDir, validSHA, 2)
+	if err := os.WriteFile(residualTmpView, []byte("orphan"), 0o600); err != nil {
+		t.Fatalf("seed orphan .tmp view: %v", err)
+	}
+
+	evRes, evErr := svc.Evict(ctx, EvictRequest{SHA256: validSHA})
+	if evErr != nil {
+		t.Fatalf("Evict failed model returned error: %v", evErr)
+	}
+	if evRes.Status != StatusNotInstalled || evRes.Model == nil || evRes.Model.BytesDownloaded != 0 || evRes.Model.LastErrorCode != "" {
+		t.Fatalf("expected not_installed with zeroed downloaded bytes and error code, got %+v", evRes)
+	}
+	if _, stErr := os.Stat(partPath); !os.IsNotExist(stErr) {
+		t.Fatalf("expected residual staging .part to be removed from disk, got err=%v", stErr)
+	}
+	for _, p := range extraPartPaths {
+		if _, stErr := os.Stat(p); !os.IsNotExist(stErr) {
+			t.Fatalf("expected multi-fence residual staging .part %s to be removed, got err=%v", p, stErr)
+		}
+	}
+	if _, stErr := os.Stat(residualTmpView); !os.IsNotExist(stErr) {
+		t.Fatalf("expected residual .tmp view %s to be removed, got err=%v", residualTmpView, stErr)
+	}
+}
+
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }

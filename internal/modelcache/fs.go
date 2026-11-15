@@ -82,6 +82,8 @@ type platformNamespace interface {
 	Close()
 	RootDev() uint64
 	StatInDir(relDirSlash, baseName string) (FileIdentity, error)
+	PinInodeForQuarantine(relDirSlash, baseName string) (io.Closer, FileIdentity, error)
+	ListDirNames(relDirSlash string) ([]string, error)
 	OpenReadOnlyInDir(relDirSlash, baseName string) (*os.File, FileIdentity, error)
 	LinkOpenFileToDir(srcFile *os.File, expectedID FileIdentity, dstRelDirSlash, dstBaseName string) error
 	RenameNoReplaceInDirs(srcRelDirSlash, srcBaseName, dstRelDirSlash, dstBaseName string) error
@@ -367,17 +369,31 @@ func quarantineAndConfirmUnlink(
 	restoreRORelDir, restoreROBase string,
 ) (unlinked bool, swapped bool, err error) {
 	relFull := relDirSlash + "/" + baseName
-	id, sErr := ns.StatInDir(relDirSlash, baseName)
+	if expectedID == nil || expectedID.Ino == 0 {
+		if _, sErr := ns.StatInDir(relDirSlash, baseName); errors.Is(sErr, os.ErrNotExist) {
+			return false, false, nil
+		} else if sErr != nil {
+			return false, false, sErr
+		}
+		return false, false, NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("refusing quarantine unlink on %s without recorded file identity", relFull))
+	}
+	pinCloser, id, sErr := ns.PinInodeForQuarantine(relDirSlash, baseName)
 	if errors.Is(sErr, os.ErrNotExist) {
 		return false, false, nil
 	}
 	if sErr != nil {
 		return false, false, sErr
 	}
-	if expectedID == nil || expectedID.Ino == 0 {
-		return false, false, NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("refusing quarantine unlink on %s without recorded file identity", relFull))
+	closePin := func() {
+		if pinCloser != nil {
+			_ = pinCloser.Close()
+			pinCloser = nil
+		}
 	}
+	defer closePin()
+
 	if (expectedID.Dev != 0 && id.Dev != expectedID.Dev) || id.Ino != expectedID.Ino {
+		closePin()
 		return false, true, nil
 	}
 
@@ -388,6 +404,7 @@ func quarantineAndConfirmUnlink(
 	seq := atomic.AddUint64(&quarantineSeq, 1)
 	qName := fmt.Sprintf(".q.%d.%s", seq, strings.ReplaceAll(uuid.NewString(), "-", ""))
 	if rErr := ns.RenameNoReplaceInDirs(relDirSlash, baseName, ".quarantine", qName); rErr != nil {
+		closePin()
 		if errors.Is(rErr, os.ErrNotExist) {
 			return false, false, nil
 		}
@@ -395,9 +412,11 @@ func quarantineAndConfirmUnlink(
 	}
 
 	qStat, qErr := ns.StatInDir(".quarantine", qName)
+	closePin()
 	if qErr != nil || (expectedID.Dev != 0 && qStat.Dev != expectedID.Dev) || qStat.Ino != expectedID.Ino {
-		// Concurrent entry replacement occurred between StatInDir and RenameNoReplaceInDirs!
-		// Restore the replacement entry back to its original path intact without deleting it.
+		// Concurrent entry replacement occurred between PinInodeForQuarantine and RenameNoReplaceInDirs!
+		// Because pinCloser kept expectedID.Ino's kernel reference count > 0 on POSIX VFS across the move,
+		// any newly created replacement file could NEVER reuse expectedID.Ino. Restore intact without deleting.
 		if restErr := ns.RenameNoReplaceInDirs(".quarantine", qName, relDirSlash, baseName); restErr != nil {
 			return false, true, NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("quarantine restore after inode swap failed: %v", restErr))
 		}
@@ -1259,6 +1278,130 @@ func EvictCASAndViews(rootDir, sha256Hex string, relViews []string, expectedCASI
 		}
 
 		return fsyncSortedDirs(ns, dirsToSync)
+	})
+}
+
+func isPositiveDecimalFenceSegment(seg string) bool {
+	if len(seg) == 0 || seg[0] < '1' || seg[0] > '9' {
+		return false
+	}
+	for i := 1; i < len(seg); i++ {
+		if seg[i] < '0' || seg[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isStagingPartNameForSHA(name, sha256Hex string) bool {
+	prefix := sha256Hex + "."
+	const suffix = ".part"
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	if len(name) <= len(prefix)+len(suffix) {
+		return false
+	}
+	mid := name[len(prefix) : len(name)-len(suffix)]
+	return isPositiveDecimalFenceSegment(mid)
+}
+
+func isTempViewNameForSHA(name, sha256Hex string) bool {
+	shortSHA := sha256Hex
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+	prefix := ".tmp." + shortSHA + "."
+	if !strings.HasPrefix(name, prefix) || len(name) <= len(prefix) {
+		return false
+	}
+	return isPositiveDecimalFenceSegment(name[len(prefix):])
+}
+
+// EvictCASViewsAndStaging deletes published hardlink views and cas/<sha256> via EvictCASAndViews,
+// and enumerates all residual fence-owned .staging/<sha256>.<fence>.part / temporary-view entries
+// across every historical fence under the exclusive namespace lock + identity-confirmed quarantine
+// unlink protocol, verifying zero residual staging artifacts remain before returning.
+func EvictCASViewsAndStaging(rootDir, sha256Hex string, relViews []string, expectedCASInode *uint64, _ int64) error {
+	if err := EvictCASAndViews(rootDir, sha256Hex, relViews, expectedCASInode); err != nil {
+		return err
+	}
+	return withTrustedNamespace(rootDir, func(ns platformNamespace) error {
+		var dirsToSync []string
+
+		stagingNames, lErr := ns.ListDirNames(".staging")
+		if lErr != nil {
+			return NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("failed enumerating .staging during eviction: %v", lErr))
+		}
+		for _, partBase := range stagingNames {
+			if !isStagingPartNameForSHA(partBase, sha256Hex) {
+				continue
+			}
+			stID, stErr := ns.StatInDir(".staging", partBase)
+			if errors.Is(stErr, os.ErrNotExist) {
+				continue
+			}
+			if stErr != nil {
+				return stErr
+			}
+			unlinked, swapped, qErr := quarantineAndConfirmUnlink(ns, ".staging", partBase, &stID, "", "")
+			if qErr != nil {
+				return qErr
+			}
+			if swapped {
+				return NewError(500, "STORAGE_IO_ERROR", "concurrent staging .part replacement detected during eviction")
+			}
+			if unlinked {
+				dirsToSync = append(dirsToSync, ".staging", ".quarantine")
+			}
+		}
+
+		viewNames, vErr := ns.ListDirNames("views")
+		if vErr != nil {
+			return NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("failed enumerating views during eviction: %v", vErr))
+		}
+		for _, tmpBase := range viewNames {
+			if !isTempViewNameForSHA(tmpBase, sha256Hex) {
+				continue
+			}
+			tvID, tvErr := ns.StatInDir("views", tmpBase)
+			if errors.Is(tvErr, os.ErrNotExist) {
+				continue
+			}
+			if tvErr != nil {
+				return tvErr
+			}
+			ownsTempView := tvID.Nlink == 1 || (expectedCASInode != nil && *expectedCASInode != 0 && tvID.Dev == ns.RootDev() && tvID.Ino == *expectedCASInode)
+			if !ownsTempView {
+				continue
+			}
+			unlinked, swapped, qErr := quarantineAndConfirmUnlink(ns, "views", tmpBase, &tvID, "cas", sha256Hex)
+			if qErr != nil {
+				return qErr
+			}
+			if swapped {
+				return NewError(500, "STORAGE_IO_ERROR", "concurrent temporary view replacement detected during eviction")
+			}
+			if unlinked {
+				dirsToSync = append(dirsToSync, "views", ".quarantine")
+			}
+		}
+
+		// Post-check under exclusive .ns.lock: verify zero residual staging .part files remain for sha256Hex.
+		afterStaging, aErr := ns.ListDirNames(".staging")
+		if aErr != nil {
+			return NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("failed post-verifying .staging after eviction: %v", aErr))
+		}
+		for _, name := range afterStaging {
+			if isStagingPartNameForSHA(name, sha256Hex) {
+				return NewError(500, "STORAGE_IO_ERROR", fmt.Sprintf("residual staging artifact %s remained after eviction", name))
+			}
+		}
+
+		if len(dirsToSync) > 0 {
+			return fsyncSortedDirs(ns, dirsToSync)
+		}
+		return nil
 	})
 }
 

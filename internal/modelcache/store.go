@@ -36,7 +36,7 @@ type Store interface {
 	PublishUnderFenceLock(ctx context.Context, entry CatalogEntry, fence int64, now time.Time, publishFn func(viewsToPublish []string) (uint64, []string, error)) (ModelStatusView, bool, error)
 	PublishViewForReadyBlob(ctx context.Context, entry CatalogEntry, now time.Time, publishFn func() (uint64, string, error)) (ModelStatusView, bool, error)
 
-	EvictUnderLock(ctx context.Context, sha256Hex string, now time.Time, unlinkFn func(relViews []string, expectedCASInode *uint64) error) (EvictResponse, error)
+	EvictUnderLock(ctx context.Context, sha256Hex string, now time.Time, unlinkFn func(relViews []string, expectedCASInode *uint64, downloadFence int64) error) (EvictResponse, error)
 
 	ReservePins(ctx context.Context, req ReservePinsRequest, now time.Time) (ReservePinsResponse, error)
 	CommitPins(ctx context.Context, req CommitPinsRequest, now time.Time) (CommitPinsResponse, error)
@@ -1085,7 +1085,7 @@ func (s *PGStore) PublishViewForReadyBlob(ctx context.Context, entry CatalogEntr
 	return buildModelStatusView(entry, blob, active, reserved), true, nil
 }
 
-func (s *PGStore) EvictUnderLock(ctx context.Context, sha256Hex string, now time.Time, unlinkFn func(relViews []string, expectedCASInode *uint64) error) (EvictResponse, error) {
+func (s *PGStore) EvictUnderLock(ctx context.Context, sha256Hex string, now time.Time, unlinkFn func(relViews []string, expectedCASInode *uint64, downloadFence int64) error) (EvictResponse, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return EvictResponse{}, err
@@ -1093,15 +1093,15 @@ func (s *PGStore) EvictUnderLock(ctx context.Context, sha256Hex string, now time
 	defer rollbackPgTx(tx)
 
 	var status string
-	var evictFence int64
+	var downloadFence, evictFence int64
 	var casInoSigned *int64
 	var viewsRaw []byte
 	err = tx.QueryRow(ctx, `
-		SELECT status, evict_fence, cas_inode, published_views
+		SELECT status, download_fence, evict_fence, cas_inode, published_views
 		  FROM station.model_cache_blobs
 		 WHERE station_id = $1 AND sha256 = $2
 		   FOR UPDATE
-	`, s.StationID, sha256Hex).Scan(&status, &evictFence, &casInoSigned, &viewsRaw)
+	`, s.StationID, sha256Hex).Scan(&status, &downloadFence, &evictFence, &casInoSigned, &viewsRaw)
 	if errors.Is(err, pgx.ErrNoRows) {
 		entries, cErr := s.GetCatalogEntriesBySHA256(ctx, sha256Hex)
 		if cErr != nil {
@@ -1185,9 +1185,9 @@ func (s *PGStore) EvictUnderLock(ctx context.Context, sha256Hex string, now time
 		return EvictResponse{}, err
 	}
 
-	// Phase 2: Unlink ONLY hardlink views and CAS matching expectedCASInode.
+	// Phase 2: Unlink ONLY hardlink views, CAS matching expectedCASInode, and residual staging .part files.
 	if unlinkFn != nil {
-		if uErr := unlinkFn(relViews, expectedCASInode); uErr != nil {
+		if uErr := unlinkFn(relViews, expectedCASInode, downloadFence); uErr != nil {
 			_, _ = s.Pool.Exec(ctx, `
 				UPDATE station.model_cache_blobs
 				   SET status = 'failed',
@@ -2129,7 +2129,7 @@ func (m *MemoryStore) PublishViewForReadyBlob(_ context.Context, entry CatalogEn
 	return buildModelStatusView(entry, m.snapshotBlobLocked(entry.SHA256, entry.SizeBytes), active, reserved), true, nil
 }
 
-func (m *MemoryStore) EvictUnderLock(ctx context.Context, sha256Hex string, now time.Time, unlinkFn func(relViews []string, expectedCASInode *uint64) error) (EvictResponse, error) {
+func (m *MemoryStore) EvictUnderLock(ctx context.Context, sha256Hex string, now time.Time, unlinkFn func(relViews []string, expectedCASInode *uint64, downloadFence int64) error) (EvictResponse, error) {
 	blk := m.blobLock(sha256Hex)
 	blk.Lock()
 	var relViews []string
@@ -2189,6 +2189,7 @@ func (m *MemoryStore) EvictUnderLock(ctx context.Context, sha256Hex string, now 
 	}
 	opUUID, _ := uuid.NewV7()
 	myOpID := opUUID.String()
+	myDownloadFence := b.DownloadFence
 	b.EvictFence++
 	myEvictFence := b.EvictFence
 	b.ActiveEvictID = myOpID
@@ -2199,7 +2200,7 @@ func (m *MemoryStore) EvictUnderLock(ctx context.Context, sha256Hex string, now 
 
 	_ = ctx
 	if unlinkFn != nil {
-		if uErr := unlinkFn(relViews, expectedCASInode); uErr != nil {
+		if uErr := unlinkFn(relViews, expectedCASInode, myDownloadFence); uErr != nil {
 			blk.Lock()
 			m.mu.Lock()
 			if b.Status == StatusEvicting && b.EvictFence == myEvictFence && b.ActiveEvictID == myOpID {
