@@ -144,10 +144,19 @@ type ResidencySnapshot struct {
 }
 
 type AdmissionModeRequest struct {
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
 	NodeUID          string `json:"node_uid,omitempty"`
+	GPUUUID          string `json:"gpu_uuid,omitempty"`
 	AdmissionMode    string `json:"admission_mode"`
+	Reason           string `json:"reason,omitempty"`
 	CutoverCompleted *bool  `json:"cutover_completed,omitempty"`
 	RunNonce         string `json:"run_nonce,omitempty"`
+}
+
+type ResidencyPruneStoppedRequest struct {
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	Reason         string `json:"reason,omitempty"`
+	RunNonce       string `json:"run_nonce,omitempty"`
 }
 
 type RestartObservation struct {
@@ -2267,12 +2276,12 @@ func (s *Service) BindTarget(ctx context.Context, caller CallerIdentity, leaseID
 			BudgetMiB:            budgetForEvent,
 			ReasonCode:           reasonCode,
 			Payload: map[string]any{
-				"pod_uid":           podUID,
-				"container_id":      containerID,
-				"boot_id":           bootID,
-				"previous_gpus":     sortedCurGPUs,
-				"actual_gpu_uuids":  actualGPUs,
-				"stage_id":          stageID,
+				"pod_uid":          podUID,
+				"container_id":     containerID,
+				"boot_id":          bootID,
+				"previous_gpus":    sortedCurGPUs,
+				"actual_gpu_uuids": actualGPUs,
+				"stage_id":         stageID,
 			},
 		})
 		if err != nil {
@@ -3307,6 +3316,8 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 	if req.AdmissionMode != AdmissionDrainOnly && req.AdmissionMode != AdmissionActive {
 		return ErrInvalidRequest
 	}
+	targetGPU := strings.TrimSpace(req.GPUUUID)
+	reason := strings.TrimSpace(req.Reason)
 
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -3321,6 +3332,18 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 	if len(cards) == 0 {
 		return ErrTopologyUnsatisfied
 	}
+	if targetGPU != "" {
+		matched := false
+		for _, c := range cards {
+			if c.GPUUUID == targetGPU {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return ErrTopologyUnsatisfied
+		}
+	}
 	leases, err := loadActiveLeases(ctx, tx, s.StationID, req.NodeUID)
 	if err != nil {
 		return err
@@ -3332,16 +3355,25 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 
 	if req.AdmissionMode == AdmissionActive {
 		for _, c := range cards {
+			if targetGPU != "" && c.GPUUUID != targetGPU {
+				continue
+			}
 			if c.State != "ready" {
 				return fmt.Errorf("%w: card %s state=%s", ErrCutoverBlocked, c.GPUUUID, c.State)
 			}
 		}
 		for _, l := range leases {
+			if targetGPU != "" && !slices.Contains(l.GPUUUIDs, targetGPU) {
+				continue
+			}
 			if l.State == "legacy_acquired" || l.State == "reconciling" {
 				return fmt.Errorf("%w: lease %s state=%s", ErrCutoverBlocked, l.LeaseID, l.State)
 			}
 		}
 		for _, r := range residencies {
+			if targetGPU != "" && r.GPUUUID != targetGPU {
+				continue
+			}
 			if r.blocksUnupgradedCutover() {
 				return fmt.Errorf("%w: residency %s un-upgraded protected/dirty", ErrCutoverBlocked, r.InstanceID)
 			}
@@ -3350,6 +3382,9 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 
 	corrUUID := uuid.Must(uuid.NewV7()).String()
 	for i := range cards {
+		if targetGPU != "" && cards[i].GPUUUID != targetGPU {
+			continue
+		}
 		prevMode := cards[i].AdmissionMode
 		cards[i].AdmissionMode = req.AdmissionMode
 		if _, err := tx.Exec(ctx, `
@@ -3360,6 +3395,10 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 			return err
 		}
 		if prevMode != req.AdmissionMode {
+			var payload map[string]any
+			if reason != "" {
+				payload = map[string]any{"reason": reason}
+			}
 			if _, _, err := appendCardEvent(ctx, tx, &cards[i], eventRecordInput{
 				RunNonce:             req.RunNonce,
 				CorrelationEventUUID: corrUUID,
@@ -3368,6 +3407,7 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 				FromState:            prevMode,
 				ToState:              req.AdmissionMode,
 				ReasonCode:           "ADMISSION_MODE_UPDATED",
+				Payload:              payload,
 			}); err != nil {
 				return err
 			}
@@ -3383,6 +3423,125 @@ func (s *Service) SetAdmissionMode(ctx context.Context, caller CallerIdentity, r
 		s.PromoteQueuedLeases(ctx, req.NodeUID)
 	}
 	return nil
+}
+
+func (s *Service) PruneStoppedResidency(ctx context.Context, caller CallerIdentity, instanceID string, req ResidencyPruneStoppedRequest) (ResidencyActionResult, error) {
+	if caller.Kind != CallerAdmin {
+		return ResidencyActionResult{}, ErrForbiddenCaller
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" || len(instanceID) > 128 {
+		return ResidencyActionResult{}, ErrInvalidRequest
+	}
+	var r residencyRow
+	err := s.Pool.QueryRow(ctx, `
+		SELECT instance_id, app_id, node_uid, pod_uid, container_name, container_id,
+		       boot_id, gpu_epoch, residency_seq, gpu_uuid, residency_state,
+		       human_protected, gui_connection_alive, dirty, snapshot_in_progress, snapshot_required,
+		       blocking_reason, pinned_budget_mib, vram_allocated_mib, callback_endpoint, template_upgraded
+		  FROM station.gpu_instance_residency
+		 WHERE station_id = $1 AND instance_id = $2
+	`, s.StationID, instanceID).Scan(
+		&r.InstanceID, &r.AppID, &r.NodeUID, &r.PodUID, &r.ContainerName, &r.ContainerID,
+		&r.BootID, &r.GPUEpoch, &r.ResidencySeq, &r.GPUUUID, &r.ResidencyState,
+		&r.HumanProtected, &r.GUIConnectionAlive, &r.Dirty, &r.SnapshotInProgress, &r.SnapshotRequired,
+		&r.BlockingReason, &r.PinnedBudgetMiB, &r.VRAMAllocatedMiB, &r.CallbackEndpoint, &r.TemplateUpgraded,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ResidencyActionResult{}, ErrResidencyNotFound
+	}
+	if err != nil {
+		return ResidencyActionResult{}, err
+	}
+	if s.InstanceDir != nil {
+		_, found, dirErr := s.InstanceDir.LookupInstance(ctx, s.StationID, instanceID)
+		if dirErr != nil {
+			return ResidencyActionResult{}, dirErr
+		}
+		if found {
+			return ResidencyActionResult{}, ErrInstanceNotEvictable
+		}
+	}
+	if s.Verifier != nil && strings.TrimSpace(r.PodUID) != "" {
+		vRes, vErr := s.Verifier.VerifyTerminated(ctx, VerifyTerminatedRequest{
+			NodeUID:     r.NodeUID,
+			GPUUUID:     r.GPUUUID,
+			PodUID:      r.PodUID,
+			ContainerID: r.ContainerID,
+			BootID:      r.BootID,
+			Mode:        "container_exited",
+		})
+		if vErr != nil || vRes.ErrorCode == "UNKNOWN_NODE_STATE" {
+			return ResidencyActionResult{}, ErrNodeStateUnknown
+		}
+		if !vRes.Verified {
+			return ResidencyActionResult{}, ErrInstanceActiveCompute
+		}
+	}
+
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return ResidencyActionResult{}, err
+	}
+	defer rollbackTx(tx)
+
+	cards, err := lockCardsForUpdate(ctx, tx, s.StationID, r.NodeUID)
+	if err != nil {
+		return ResidencyActionResult{}, err
+	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM station.gpu_instance_residency
+		 WHERE station_id = $1 AND instance_id = $2 AND residency_seq = $3
+	`, s.StationID, instanceID, r.ResidencySeq)
+	if err != nil {
+		return ResidencyActionResult{}, err
+	}
+	if tag.RowsAffected() == 0 {
+		return ResidencyActionResult{}, ErrVersionConflict
+	}
+
+	var eventSeq int64
+	corrUUID := uuid.Must(uuid.NewV7()).String()
+	for i := range cards {
+		if cards[i].GPUUUID != r.GPUUUID {
+			continue
+		}
+		payload := map[string]any{"pod_uid": r.PodUID, "boot_id": r.BootID}
+		if trimmedReason := strings.TrimSpace(req.Reason); trimmedReason != "" {
+			payload["reason"] = trimmedReason
+		}
+		seq, _, evErr := appendCardEvent(ctx, tx, &cards[i], eventRecordInput{
+			RunNonce:             req.RunNonce,
+			CorrelationEventUUID: corrUUID,
+			EntityType:           "residency",
+			EntityID:             r.InstanceID,
+			FromState:            r.ResidencyState,
+			ToState:              "stopped_pruned",
+			ResidencySeq:         r.ResidencySeq,
+			GPUEpoch:             r.GPUEpoch,
+			ReasonCode:           "RESIDENCY_STOPPED_PRUNED",
+			Payload:              payload,
+		})
+		if evErr != nil {
+			return ResidencyActionResult{}, evErr
+		}
+		eventSeq = seq
+		break
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ResidencyActionResult{}, err
+	}
+	s.PromoteQueuedLeases(ctx, r.NodeUID)
+	return ResidencyActionResult{
+		InstanceID:     r.InstanceID,
+		AppID:          r.AppID,
+		FromState:      r.ResidencyState,
+		ResidencyState: "stopped_pruned",
+		BootID:         r.BootID,
+		GPUEpoch:       r.GPUEpoch,
+		ResidencySeq:   r.ResidencySeq,
+		LedgerEventSeq: eventSeq,
+	}, nil
 }
 
 // ReconcileRestart executes the P-E three-way reconciliation across PostgreSQL ledger,

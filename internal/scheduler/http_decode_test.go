@@ -48,6 +48,20 @@ func TestDecodeJSONObjectAllowsNullAndExplicitZeroOptionalFields(t *testing.T) {
 	}`), maxBodyBytes, &acquireReq); err != nil {
 		t.Fatalf("expected DecodeJSONObject to accept explicit zero/empty/null AcquireRequest fields, got %v", err)
 	}
+
+	var admReq AdmissionModeRequest
+	if err := DecodeJSONObject(strings.NewReader(`{
+		"idempotency_key": "adm-gpu1-drain",
+		"node_uid": "28397617-c8a3-4735-ac32-64303f9f1ec4",
+		"gpu_uuid": "GPU-798fb508-830f-b538-6733-72ed6d210d40",
+		"admission_mode": "drain_only",
+		"reason": "t4_s3_single_card_downgrade_proof"
+	}`), maxBodyBytes, &admReq); err != nil {
+		t.Fatalf("expected DecodeJSONObject to accept per-card AdmissionModeRequest fields, got %v", err)
+	}
+	if admReq.GPUUUID != "GPU-798fb508-830f-b538-6733-72ed6d210d40" || admReq.AdmissionMode != "drain_only" {
+		t.Fatalf("unexpected AdmissionModeRequest values: %+v", admReq)
+	}
 }
 
 func TestDecodeJSONObjectRejectsMalformedUnknownDuplicateAndTrailingTokens(t *testing.T) {

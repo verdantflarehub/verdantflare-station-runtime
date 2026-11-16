@@ -272,6 +272,23 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				writeJSON(w, http.StatusOK, res)
 				return
+
+			case "prune-stopped":
+				var req ResidencyPruneStoppedRequest
+				if DecodeJSONObject(r.Body, maxBodyBytes, &req) != nil {
+					writeMappedError(w, ErrInvalidRequest)
+					return
+				}
+				if runNonce := strings.TrimSpace(r.Header.Get("X-Verdant-Run-Nonce")); runNonce != "" && req.RunNonce == "" {
+					req.RunNonce = runNonce
+				}
+				res, err := h.Service.PruneStoppedResidency(r.Context(), caller, instanceID, req)
+				if err != nil {
+					writeMappedError(w, err)
+					return
+				}
+				writeJSON(w, http.StatusOK, res)
+				return
 			}
 		}
 		writeJSONError(w, http.StatusNotFound, "NOT_FOUND", "unknown residency route")
