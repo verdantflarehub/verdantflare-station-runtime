@@ -32,6 +32,7 @@ type Service struct {
 	Hook                   StageHook
 	Now                    func() time.Time
 	residencyIdemStripes   [64]sync.Mutex
+	drainingInFlight       sync.Map
 }
 
 func (s *Service) lockResidencyIdempotency(scope, key string) func() {
@@ -929,7 +930,7 @@ func (s *Service) PromoteQueuedLeases(ctx context.Context, nodeUID string) {
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1
 		   AND ($2 = '' OR node_uid = $2)
-		   AND state = 'queued'
+		   AND state IN ('queued', 'draining')
 		   AND expires_at > $3
 		 ORDER BY created_at ASC, lease_id ASC
 	`, s.StationID, strings.TrimSpace(nodeUID), now)
@@ -957,17 +958,23 @@ func (s *Service) PromoteQueuedLeases(ctx context.Context, nodeUID string) {
 		); sErr != nil {
 			continue
 		}
+		if _, inflight := s.drainingInFlight.Load(leaseID); inflight {
+			continue
+		}
 		var req AcquireRequest
+		fromCache := false
 		if len(cacheRaw) > 0 {
 			var cacheMap map[string]json.RawMessage
 			if json.Unmarshal(cacheRaw, &cacheMap) == nil {
 				if rawReqJSON, ok := cacheMap["acquire_req"]; ok && len(rawReqJSON) > 0 {
-					_ = json.Unmarshal(rawReqJSON, &req)
-					req.RequestSHA256 = ""
+					if json.Unmarshal(rawReqJSON, &req) == nil && req.IdempotencyKey != "" {
+						req.RequestSHA256 = ""
+						fromCache = true
+					}
 				}
 			}
 		}
-		if req.IdempotencyKey == "" {
+		if !fromCache {
 			req = AcquireRequest{
 				IdempotencyKey:      idemKey,
 				HolderAppID:         appID,
@@ -985,19 +992,6 @@ func (s *Service) PromoteQueuedLeases(ctx context.Context, nodeUID string) {
 				StartupFreeMinMiB:   startupMiB,
 				HeadroomOverrideMiB: hdrOverride,
 				PriorityClass:       prio,
-			}
-		} else {
-			if req.PodUID == "" && podUID != "" {
-				req.PodUID = podUID
-			}
-			if req.ContainerID == "" && cid != "" {
-				req.ContainerID = cid
-			}
-			if req.BootID == "" && bootID != "" {
-				req.BootID = bootID
-			}
-			if req.NodeUID == "" && nUID != "" {
-				req.NodeUID = nUID
 			}
 		}
 		candidates = append(candidates, queuedCandidate{
@@ -1068,7 +1062,7 @@ func (s *Service) acquireInternal(ctx context.Context, caller CallerIdentity, ra
 		return LeaseDecision{}, err
 	}
 	if isAutoPromote {
-		if errors.Is(err, pgx.ErrNoRows) || existingState != "queued" || !existingExpiresAt.After(s.now()) {
+		if errors.Is(err, pgx.ErrNoRows) || (existingState != "queued" && existingState != "draining") || !existingExpiresAt.After(s.now()) {
 			return LeaseDecision{}, nil
 		}
 		reqHash = existingHash
@@ -1481,7 +1475,8 @@ func (s *Service) acquireInternal(ctx context.Context, caller CallerIdentity, ra
 		fence = candidateCards[0].MinFencingToken
 	}
 	if !isNew {
-		if isAutoPromote && targetState == "queued" &&
+		if isAutoPromote && (targetState == "queued" || targetState == "draining") &&
+			existingState == targetState &&
 			slices.Equal(existingReservedGPUs, reservedGPUs) &&
 			existingBlockReason == blockReason &&
 			existingBlockHolder == blockHolder {
@@ -1595,9 +1590,12 @@ func (s *Service) acquireInternal(ctx context.Context, caller CallerIdentity, ra
 
 	// Execute Fenced Pre-flight Eviction OUTSIDE the short card-lock transaction (§4.2.1 & §7.2)!
 	if targetState == "draining" && len(pendingEvictions) > 0 && s.Evictor != nil {
-		promoted, pErr := s.executeDrainingEviction(ctx, caller, req, leaseID, pendingNodeUID, pendingEvictions)
-		if pErr == nil {
-			return promoted, nil
+		if _, loaded := s.drainingInFlight.LoadOrStore(leaseID, true); !loaded {
+			defer s.drainingInFlight.Delete(leaseID)
+			promoted, pErr := s.executeDrainingEviction(ctx, caller, req, isAutoPromote, leaseID, pendingNodeUID, pendingEvictions)
+			if pErr == nil {
+				return promoted, nil
+			}
 		}
 	}
 

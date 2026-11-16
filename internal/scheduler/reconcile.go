@@ -612,6 +612,7 @@ func (s *Service) executeDrainingEviction(
 	ctx context.Context,
 	caller CallerIdentity,
 	req AcquireRequest,
+	isAutoPromote bool,
 	leaseID string,
 	nodeUID string,
 	cmds []EvictVRAMCommand,
@@ -668,7 +669,8 @@ func (s *Service) executeDrainingEviction(
 		}
 	}
 
-	return s.Acquire(ctx, caller, req)
+	req.RequestSHA256 = ""
+	return s.acquireInternal(ctx, caller, req, isAutoPromote)
 }
 
 type boundLeaseRecord struct {
@@ -1370,7 +1372,7 @@ func (s *Service) GetLease(ctx context.Context, caller CallerIdentity, leaseID s
 	if err != nil {
 		return LeaseDecision{}, err
 	}
-	if dec.State == "queued" {
+	if dec.State == "queued" || dec.State == "draining" {
 		s.PromoteQueuedLeases(ctx, dec.NodeUID)
 		return loadOnce()
 	}
