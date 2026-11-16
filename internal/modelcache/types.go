@@ -574,7 +574,7 @@ type EnsureResponse struct {
 }
 
 type ReservePinsRequest struct {
-	HolderAppID    string   `json:"holder_app_id"`
+	HolderAppID    string   `json:"holder_app_id,omitempty"`
 	ReservationID  string   `json:"reservation_id"`
 	OperationID    string   `json:"operation_id"`
 	ScopeKind      string   `json:"scope_kind"`
@@ -587,18 +587,18 @@ type ReservePinsRequest struct {
 }
 
 type PinRecord struct {
-	PinID          string    `json:"pin_id"`
-	SHA256         string    `json:"sha256"`
-	HolderAppID    string    `json:"holder_app_id"`
-	ReservationID  string    `json:"reservation_id"`
-	OperationID    string    `json:"operation_id"`
-	ScopeKind      string    `json:"scope_kind"`
-	OwnerID        string    `json:"owner_id"`
-	OrganizationID string    `json:"organization_id"`
-	ProjectID      string    `json:"project_id"`
-	RequestSHA256  string    `json:"request_sha256"`
-	PinState       string    `json:"pin_state"`
-	ExpiresAt      *string   `json:"expires_at,omitempty"`
+	PinID          string  `json:"pin_id"`
+	SHA256         string  `json:"sha256"`
+	HolderAppID    string  `json:"holder_app_id"`
+	ReservationID  string  `json:"reservation_id"`
+	OperationID    string  `json:"operation_id"`
+	ScopeKind      string  `json:"scope_kind"`
+	OwnerID        string  `json:"owner_id"`
+	OrganizationID string  `json:"organization_id"`
+	ProjectID      string  `json:"project_id"`
+	RequestSHA256  string  `json:"request_sha256"`
+	PinState       string  `json:"pin_state"`
+	ExpiresAt      *string `json:"expires_at,omitempty"`
 }
 
 type ReservePinsResponse struct {
@@ -608,7 +608,7 @@ type ReservePinsResponse struct {
 }
 
 type CommitPinsRequest struct {
-	HolderAppID   string `json:"holder_app_id"`
+	HolderAppID   string `json:"holder_app_id,omitempty"`
 	ReservationID string `json:"reservation_id"`
 	OwnerID       string `json:"owner_id,omitempty"`
 }
@@ -620,9 +620,9 @@ type CommitPinsResponse struct {
 }
 
 type ReleasePinsRequest struct {
-	HolderAppID   string `json:"holder_app_id"`
+	HolderAppID   string `json:"holder_app_id,omitempty"`
 	ReservationID string `json:"reservation_id"`
-	Reason        string `json:"reason"`
+	Reason        string `json:"reason,omitempty"`
 }
 
 type ReleasePinsResponse struct {
