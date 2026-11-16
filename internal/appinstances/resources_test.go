@@ -388,3 +388,54 @@ func TestServiceCredentialAndProfileDriftAreRejected(t *testing.T) {
 		t.Fatal("new profile reused old volume binding")
 	}
 }
+
+func TestEnsureWorkerPreservesContainerIDAcrossMultiPollReadiness(t *testing.T) {
+	ctx := context.Background()
+	in, p, pvc, pv := fixture()
+	c := client(pvc, pv)
+	b := bind(t, c, in, p, pvc.Name)
+	current := Observation{}
+	chk := func(_ context.Context, next Observation) error {
+		if !monotonicObservation(current, next) {
+			return ErrBinding
+		}
+		current = next
+		return nil
+	}
+	if _, e := EnsureWorker(ctx, c, in, p, b, current, chk); e != nil {
+		t.Fatal(e)
+	}
+	pod, _ := c.CoreV1().Pods(p.Namespace).Get(ctx, runName(in), metav1.GetOptions{})
+	pod.Spec.NodeName = p.NodeName
+	pod.Status.Phase = corev1.PodRunning
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{
+		{Name: "worker", ContainerID: "containerd://1e71d001bc480ebe308d2b575867acb914c4c86a54e6bea66b1df49310756119"},
+	}
+	if _, e := c.CoreV1().Pods(p.Namespace).Update(ctx, pod, metav1.UpdateOptions{}); e != nil {
+		t.Fatal(e)
+	}
+	// Poll 2: ContainerID populated by kubelet while StartupProbe has not yet set PodReady=True.
+	if _, e := EnsureWorker(ctx, c, in, p, b, current, chk); e != nil {
+		t.Fatal("poll 2 failed:", e)
+	}
+	if current.ContainerID == "" || current.PodReady {
+		t.Fatalf("unexpected poll 2 state: %+v", current)
+	}
+	// Poll 3: StartupProbe turns PodReady=True; checkpoint must remain monotonic on ContainerID.
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	if _, e := c.CoreV1().Pods(p.Namespace).Update(ctx, pod, metav1.UpdateOptions{}); e != nil {
+		t.Fatal(e)
+	}
+	obs, e := EnsureWorker(ctx, c, in, p, b, current, chk)
+	if e != nil || !obs.PodReady || obs.ContainerID != current.ContainerID {
+		t.Fatalf("poll 3 failed: obs=%+v err=%v", obs, e)
+	}
+	// Mutating ContainerID under the same PodUID must still fail-closed with ErrBinding.
+	pod.Status.ContainerStatuses[0].ContainerID = "containerd://ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if _, e := c.CoreV1().Pods(p.Namespace).Update(ctx, pod, metav1.UpdateOptions{}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := EnsureWorker(ctx, c, in, p, b, current, chk); !errors.Is(e, ErrBinding) {
+		t.Fatalf("expected ErrBinding on ContainerID drift, got %v", e)
+	}
+}

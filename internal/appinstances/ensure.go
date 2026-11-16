@@ -105,6 +105,20 @@ func EnsureWorker(ctx context.Context, client kubernetes.Interface, in Run, p Pr
 	}
 	if currentPod != nil {
 		progress.PodUID = string(currentPod.UID)
+		for _, cs := range currentPod.Status.ContainerStatuses {
+			if cs.Name == "worker" && validContainerID(cs.ContainerID) {
+				progress.ContainerID = cs.ContainerID
+				break
+			}
+		}
+		if expected.ContainerID != "" {
+			if progress.ContainerID != "" && progress.ContainerID != expected.ContainerID {
+				return Observation{}, ErrBinding
+			}
+			if progress.ContainerID == "" {
+				progress.ContainerID = expected.ContainerID
+			}
+		}
 	}
 	if e = checkpoint(ctx, progress); e != nil {
 		return progress, e
