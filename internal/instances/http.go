@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -37,6 +38,7 @@ func decodeRequest(raw []byte, target any) error {
 		return ErrInvalid
 	}
 	fields := map[string]bool{}
+	optional := map[string]bool{}
 	typ := reflect.TypeOf(target).Elem()
 	var collect func(reflect.Type)
 	collect = func(typ reflect.Type) {
@@ -45,7 +47,9 @@ func decodeRequest(raw []byte, target any) error {
 			if field.Anonymous {
 				collect(field.Type)
 			} else {
-				fields[field.Tag.Get("json")] = false
+				name, options, _ := strings.Cut(field.Tag.Get("json"), ",")
+				fields[name] = false
+				optional[name] = options == "omitempty"
 			}
 		}
 	}
@@ -69,8 +73,8 @@ func decodeRequest(raw []byte, target any) error {
 	if _, err = d.Token(); err != io.EOF {
 		return ErrInvalid
 	}
-	for _, seen := range fields {
-		if !seen {
+	for key, seen := range fields {
+		if !seen && !optional[key] {
 			return ErrInvalid
 		}
 	}

@@ -160,7 +160,7 @@ func DefaultConsumerSpec(kind string) (ConsumerProfileSpec, bool) {
 	case "indextts2", "speech.synthesize":
 		return ConsumerProfileSpec{CardCount: 1, PeakBudgetMiB: 6144, StartupFreeMinMiB: 6144, Priority: PrioritySharedSlice}, true
 	case "music3", "music.generate":
-		return ConsumerProfileSpec{CardCount: 2, PeakBudgetMiB: 16384, StartupFreeMinMiB: 18432, Priority: PriorityExclusiveBatch}, true
+		return ConsumerProfileSpec{CardCount: 2, PeakBudgetMiB: 29696, StartupFreeMinMiB: 28672, HeadroomOverrideMiB: &exclHdr, Priority: PriorityExclusiveBatch}, true
 	case "uvr5", "music.cover":
 		return ConsumerProfileSpec{CardCount: 1, PeakBudgetMiB: 6144, StartupFreeMinMiB: 6144, Priority: PrioritySharedSlice}, true
 	case "rvc", "voice_training":
@@ -221,6 +221,7 @@ type AcquireRequest struct {
 }
 
 type LeaseDecision struct {
+	NeverGranted      bool     `json:"never_granted"`
 	LeaseID           string   `json:"lease_id"`
 	State             string   `json:"state"`
 	HolderAppID       string   `json:"holder_app_id"`

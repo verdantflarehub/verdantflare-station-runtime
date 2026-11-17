@@ -46,12 +46,16 @@ type WorkspaceVolume struct {
 }
 
 type ReleaseWorkspaceRequest struct {
-	StationID      string `json:"station_id"`
-	OrganizationID string `json:"organization_id"`
-	UserID         string `json:"user_id"`
-	IdempotencyKey string `json:"idempotency_key"`
-	Namespace      string `json:"namespace"`
-	PVCName        string `json:"pvc_name"`
+	PreserveBoundPVC bool   `json:"preserve_bound_pvc,omitempty"`
+	InstanceID       string `json:"instance_id,omitempty"`
+	PVCUID           string `json:"pvc_uid,omitempty"`
+	PVUID            string `json:"pv_uid,omitempty"`
+	StationID        string `json:"station_id"`
+	OrganizationID   string `json:"organization_id"`
+	UserID           string `json:"user_id"`
+	IdempotencyKey   string `json:"idempotency_key"`
+	Namespace        string `json:"namespace"`
+	PVCName          string `json:"pvc_name"`
 }
 
 type runtimeWorkspaceRow struct {
@@ -366,6 +370,13 @@ func (s *Service) ReleaseWorkspace(ctx context.Context, in ReleaseWorkspaceReque
 		}
 	}
 	if in.StationID != s.StationID || len(validation.IsDNS1123Label(in.Namespace)) != 0 || in.Namespace == "default" || len(validation.IsDNS1123Subdomain(in.PVCName)) != 0 {
+		return WorkspaceVolume{}, ErrInvalid
+	}
+
+	if in.PreserveBoundPVC {
+		return s.releaseBoundWorkspace(ctx, in)
+	}
+	if in.InstanceID != "" || in.PVCUID != "" || in.PVUID != "" {
 		return WorkspaceVolume{}, ErrInvalid
 	}
 
@@ -879,4 +890,3 @@ func CleanWorkspacePod(ctx context.Context, client kubernetes.Interface, namespa
 		}
 	}
 }
-

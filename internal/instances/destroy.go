@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 )
 
 type DestroyRequest struct {
@@ -33,6 +34,28 @@ type DestroyProgress struct {
 	Status      string         `json:"status"`
 	Phase       string         `json:"phase"`
 	Workspace   *VolumeBinding `json:"workspace,omitempty"`
+}
+
+func orphanStartResourcesAbsent(ctx context.Context, client kubernetes.Interface, namespace, instance string) error {
+	pods, err := client.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, pod := range pods.Items {
+		if pod.Annotations[instanceKey] == instance {
+			return ErrBusy
+		}
+	}
+	services, err := client.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, svc := range services.Items {
+		if svc.Annotations[instanceKey] == instance {
+			return ErrBusy
+		}
+	}
+	return nil
 }
 
 // Destroy revokes access only after a completed stop (or prepared, never-started
@@ -69,12 +92,15 @@ func (s *Service) Destroy(ctx context.Context, in DestroyRequest) (DestroyProgre
 		return out, err
 	}
 	state := destroyState{}
+	orphanStart := false
 	if fresh {
 		var op, action, status, phase string
-		if err = tx.QueryRow(ctx, `SELECT operation_id::text,action,status,phase FROM station.runtime_instance_executions WHERE instance_id=$1 ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID).Scan(&op, &action, &status, &phase); err != nil {
+		var stale bool
+		if err = tx.QueryRow(ctx, `SELECT operation_id::text,action,status,phase,created_at < now()-interval '10 minutes' FROM station.runtime_instance_executions WHERE instance_id=$1 ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID).Scan(&op, &action, &status, &phase, &stale); err != nil {
 			return out, err
 		}
-		if op != in.PreviousOperationID || (action != "stop" && action != "create") || status != "succeeded" || phase != "stopped" {
+		orphanStart = action == "start" && status == "running" && stale
+		if op != in.PreviousOperationID || (!orphanStart && ((action != "stop" && action != "create") || status != "succeeded" || phase != "stopped")) {
 			return out, ErrConflict
 		}
 		var input, execution []byte
@@ -110,6 +136,20 @@ func (s *Service) Destroy(ctx context.Context, in DestroyRequest) (DestroyProgre
 	if fresh {
 		if binding.Retained {
 			return out, ErrRetained
+		}
+		if orphanStart {
+			// Same instance advisory lock as Start: prove absence before fencing it.
+			// Inspect rejects every Pod mounting this workspace, including terminating Pods.
+			if _, err = Inspect(ctx, s.Client, create.identity(), p.StorageProfile, binding.PVCName, &binding, nil); err != nil {
+				return out, err
+			}
+			if err = orphanStartResourcesAbsent(ctx, s.Client, p.Namespace, in.InstanceID); err != nil {
+				return out, err
+			}
+			// Retain workspace bytes; never fabricate a saved scene or successful stop.
+			if _, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET status='failed',error_code='ORPHAN_START_FENCED',updated_at=now() WHERE operation_id=$1 AND status='running'`, in.PreviousOperationID); err != nil {
+				return out, err
+			}
 		}
 		stateRaw, _ = json.Marshal(state)
 		_, err = tx.Exec(ctx, `INSERT INTO station.runtime_instance_executions(operation_id,instance_id,station_id,organization_id,user_id,project_id,action,request_hash,profile_hash,input,status,phase,state) VALUES($1,$2,$3,$4,$5,$6,'destroy',$7,$8,$9,'running','accepted',$10)`, in.OperationID, in.InstanceID, in.StationID, in.OrganizationID, in.UserID, in.ProjectID, hash[:], p.Hash[:], raw, stateRaw)

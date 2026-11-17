@@ -873,6 +873,9 @@ func decisionFromRow(r activeLeaseRow, queuePos int, ledgerSeq int64) LeaseDecis
 		firstGPU = r.GPUUUIDs[0]
 	}
 	return LeaseDecision{
+		// Assigned GPUs are written only on grant and retained through expiry.
+		// Candidate Pod identity and queue fencing tokens do not prove a grant.
+		NeverGranted:      len(r.GPUUUIDs) == 0 && (r.State == "queued" || r.State == "draining" || r.State == "expired"),
 		LeaseID:           r.LeaseID,
 		State:             r.State,
 		HolderAppID:       r.HolderAppID,
