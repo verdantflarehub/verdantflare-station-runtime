@@ -576,7 +576,9 @@ func run() int {
 			gpuAddr = "0.0.0.0:5056"
 		}
 		recCtx, recCancel := context.WithTimeout(ctx, 10*time.Second)
-		_ = gpuSvc.ReconcileRestart(recCtx, scheduler.RestartObservation{})
+		if rErr := gpuSvc.ReconcileRestart(recCtx, scheduler.RestartObservation{}); rErr != nil {
+			logger.Warn("gpu_scheduler_startup_reconcile_failed", "error", rErr.Error())
+		}
 		recCancel()
 
 		gpuSchedulerServer = &http.Server{
@@ -598,7 +600,9 @@ func run() int {
 					return
 				case <-ticker.C:
 					sCtx, sCancel := context.WithTimeout(ctx, 10*time.Second)
-					_ = gpuSvc.ReconcileRestart(sCtx, scheduler.RestartObservation{})
+					if rErr := gpuSvc.ReconcileRestart(sCtx, scheduler.RestartObservation{}); rErr != nil {
+						logger.Warn("gpu_scheduler_periodic_reconcile_failed", "error", rErr.Error())
+					}
 					sCancel()
 				}
 			}

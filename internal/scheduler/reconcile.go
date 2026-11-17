@@ -3957,10 +3957,12 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 		if out.capExpiresAt && curExpires.After(now) {
 			nextExpires = now
 		}
-		var updatedProofRaw []byte
+		updatedProofRaw := []byte("{}")
 		hasProofUpdate := out.updatedReclaimProof != nil
 		if hasProofUpdate {
-			updatedProofRaw, _ = json.Marshal(out.updatedReclaimProof)
+			if raw, mErr := json.Marshal(out.updatedReclaimProof); mErr == nil && len(raw) > 0 {
+				updatedProofRaw = raw
+			}
 		}
 
 		cmdTag, err := tx.Exec(ctx, `

@@ -3432,6 +3432,21 @@ func TestUnboundLeaseFiveGateConvergenceAndBindDeadlineDB(t *testing.T) {
 	imgCaller := CallerIdentity{AppID: "app-image", Kind: CallerConsumer}
 	nodeCaller := CallerIdentity{AppID: "node-5090-agent", Kind: CallerNodeAgent}
 
+	boundPodUID := "00000000-1111-2222-3333-444444444444"
+	boundDec, err := fix.svc.Acquire(ctx, imgCaller, AcquireRequest{
+		IdempotencyKey:    "e01-bound-gpu0-active",
+		ConsumerKind:      "moss-image",
+		AttemptID:         "att-bound-gpu0",
+		PodUID:            boundPodUID,
+		ContainerID:       strings.Repeat("b", 64),
+		BootID:            "boot-e01",
+		CandidateGPUUUIDs: []string{"GPU-0000"},
+		TTLSeconds:        30,
+	})
+	if err != nil || boundDec.State != "leased" {
+		t.Fatalf("Acquire bound lease on GPU-0000: %+v (%v)", boundDec, err)
+	}
+
 	unboundDec, err := fix.svc.Acquire(ctx, imgCaller, AcquireRequest{
 		IdempotencyKey:    "e01-unbound-moss-1",
 		ConsumerKind:      "moss-image",
@@ -3455,6 +3470,14 @@ func TestUnboundLeaseFiveGateConvergenceAndBindDeadlineDB(t *testing.T) {
 		t.Fatalf("expected late BindTarget past 60s deadline to fail ErrFencingRevoked, got %v", err)
 	}
 
+	fix.verifier.byKey = map[string]VerifyTerminatedResult{
+		boundPodUID: {
+			Verified:            false,
+			GPUProcessCount:     1,
+			MeasuredFreeVRAMMiB: 24329,
+			MeasuredUsedVRAMMiB: 8278,
+		},
+	}
 	fix.verifier.defRes = VerifyTerminatedResult{
 		Verified:            true,
 		GPUProcessCount:     0,
@@ -3530,6 +3553,10 @@ func TestUnboundLeaseFiveGateConvergenceAndBindDeadlineDB(t *testing.T) {
 	snapFinal, err := fix.svc.Snapshot(ctx)
 	if err != nil || snapFinal.Cards[1].State != "ready" {
 		t.Fatalf("expected GPU-0001 recovered to ready, got %+v (%v)", snapFinal, err)
+	}
+	boundFinal, err := fix.svc.GetLease(ctx, imgCaller, boundDec.LeaseID)
+	if err != nil || boundFinal.State != "reclaiming" {
+		t.Fatalf("expected active bound lease on GPU-0000 preserved in reclaiming, got %+v (%v)", boundFinal, err)
 	}
 	verifyAllCardHashChains(t, ctx, fix.pool, fix.stationID)
 }
