@@ -1067,3 +1067,194 @@ func TestT41_G4_NegativeControlSelfCheckSuite(t *testing.T) {
 	t.Logf("[G4 NEGATIVE CONTROL SELF-CHECK PASSED] all 6 negative probes (invalid_token, stale_gpu_epoch, stale_telemetry, tampered_run_id, mismatched_artifact_sha256, forged_settled_double) caught and rejected")
 	verifyAllCardHashChains(t, ctx, fix.pool, fix.stationID)
 }
+
+// TestT41_PC_HeartbeatVersionBumpThenStageHandoffAndDowngrade covers Claude H2 regression gate:
+//  1. Acquire H3 lease (29696 MiB, version=1) -> runtime heartbeat bumps state=running & version=2 -> second heartbeat bumps version=3;
+//  2. Stage handoff (P1 generation -> P2 regenerate_2k) with stale ExpectedVersion=1 MUST be rejected with 409 LEASE_VERSION_CONFLICT;
+//  3. Stage handoff with monotonically tracked ExpectedVersion=3 succeeds (version=4, stage_id=regenerate_2k);
+//  4. Calling Downgrade with WorkerSettled=false MUST return 409 WORKER_NOT_SETTLED;
+//  5. Calling Downgrade (P2 -> P3 postprocess_rife, 29696 -> 4096 MiB) with stale ExpectedVersion=3 returns 409 LEASE_VERSION_CONFLICT,
+//     and with monotonically tracked ExpectedVersion=4 atomically commits 29696 -> 4096 MiB (version=5).
+func TestT41_PC_HeartbeatVersionBumpThenStageHandoffAndDowngrade(t *testing.T) {
+	fix := setupSchedulerDB(t)
+	ctx := context.Background()
+	fix.svc.CutoverCompleted = true
+	srv := httptest.NewServer(Handler{Service: fix.svc})
+	defer srv.Close()
+
+	cidP1 := strings.Repeat("a", 64)
+	cidP2 := strings.Repeat("b", 64)
+	cidP3 := strings.Repeat("c", 64)
+	fix.verifier.byKey = map[string]VerifyTerminatedResult{
+		"pod-h3-p1": {Verified: true, GPUProcessCount: 0},
+		"pod-h3-p2": {Verified: true, GPUProcessCount: 0},
+		"pod-rife":  {Verified: true, GPUProcessCount: 0},
+	}
+
+	cAcq, dec1, _, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/acquire", AcquireRequest{
+		IdempotencyKey:    "pc-h2-acq-p1",
+		HolderAppID:       "app-video",
+		ConsumerKind:      "h3",
+		TaskID:            "video_task_pc_h2",
+		AttemptID:         "att-pc-h2",
+		StageID:           "generation",
+		PodUID:            "pod-h3-p1",
+		ContainerID:       cidP1,
+		BootID:            "boot-p1",
+		CandidateGPUUUIDs: []string{"GPU-0000"},
+	})
+	if err != nil || cAcq != http.StatusOK || dec1.Version != 1 {
+		t.Fatalf("expected initial acquire version=1, got code=%d ver=%d err=%v", cAcq, dec1.Version, err)
+	}
+
+	// Simulate P1 runtime heartbeats incrementing lease version 1 -> 2 -> 3.
+	cHB1, dec2, _, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/heartbeat", HeartbeatRequest{
+		IdempotencyKey:  "pc-h2-hb-1",
+		FencingToken:    dec1.FencingToken,
+		ExpectedVersion: dec1.Version,
+	})
+	if err != nil || cHB1 != http.StatusOK || dec2.Version != 2 || dec2.State != "running" {
+		t.Fatalf("expected heartbeat #1 -> version=2 running, got code=%d dec=%+v err=%v", cHB1, dec2, err)
+	}
+	cHB2, dec3, _, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/heartbeat", HeartbeatRequest{
+		IdempotencyKey:  "pc-h2-hb-2",
+		FencingToken:    dec1.FencingToken,
+		ExpectedVersion: dec2.Version,
+	})
+	if err != nil || cHB2 != http.StatusOK || dec3.Version != 3 {
+		t.Fatalf("expected heartbeat #2 -> version=3, got code=%d dec=%+v err=%v", cHB2, dec3, err)
+	}
+
+	p1Proof := map[string]any{
+		"reclaimed":                  true,
+		"revoked_lease_id":           dec1.LeaseID,
+		"consumed_fencing_token":     dec1.FencingToken,
+		"sealed_gpu_epoch":           int64(7),
+		"supervisor_pid":             4101,
+		"supervisor_starttime_ticks": uint64(987654),
+		"sealed_pod_uid":             "pod-h3-p1",
+		"sealed_container_id":        cidP1,
+		"sealed_boot_id":             "boot-p1",
+	}
+
+	// Stale ExpectedVersion=1 on stage_handoff MUST fail with 409 LEASE_VERSION_CONFLICT (H1 CAS fence).
+	cStaleHandoff, _, staleHandoffBody, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/heartbeat", HeartbeatRequest{
+		IdempotencyKey:           "pc-h2-handoff-stale",
+		FencingToken:             dec1.FencingToken,
+		ExpectedVersion:          1,
+		NewStageID:               "regenerate_2k",
+		WorkerSettled:            true,
+		ReclaimMode:              "epoch_unload",
+		ReclaimProof:             p1Proof,
+		GPUEpoch:                 7,
+		SupervisorPID:            4101,
+		SupervisorStarttimeTicks: 987654,
+		PodUID:                   "pod-h3-p1",
+		ContainerID:              cidP1,
+		BootID:                   "boot-p1",
+		NextPodUID:               "pod-h3-p2",
+		NextContainerID:          cidP2,
+		NextBootID:               "boot-p2",
+	})
+	if err != nil || cStaleHandoff != http.StatusConflict || staleHandoffBody["error_code"] != "LEASE_VERSION_CONFLICT" {
+		t.Fatalf("expected 409 LEASE_VERSION_CONFLICT on stale version=1 handoff, got code=%d body=%+v err=%v", cStaleHandoff, staleHandoffBody, err)
+	}
+
+	// Monotonically tracked ExpectedVersion=3 on stage_handoff MUST succeed -> version=4, stage_id=regenerate_2k.
+	cHandoff, dec4, _, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/heartbeat", HeartbeatRequest{
+		IdempotencyKey:           "pc-h2-handoff-ok",
+		FencingToken:             dec1.FencingToken,
+		ExpectedVersion:          dec3.Version,
+		NewStageID:               "regenerate_2k",
+		WorkerSettled:            true,
+		ReclaimMode:              "epoch_unload",
+		ReclaimProof:             p1Proof,
+		GPUEpoch:                 7,
+		SupervisorPID:            4101,
+		SupervisorStarttimeTicks: 987654,
+		PodUID:                   "pod-h3-p1",
+		ContainerID:              cidP1,
+		BootID:                   "boot-p1",
+		NextPodUID:               "pod-h3-p2",
+		NextContainerID:          cidP2,
+		NextBootID:               "boot-p2",
+	})
+	if err != nil || cHandoff != http.StatusOK || dec4.Version != 4 || dec4.StageID != "regenerate_2k" {
+		t.Fatalf("expected stage_handoff success version=4 stage=regenerate_2k, got code=%d dec=%+v err=%v", cHandoff, dec4, err)
+	}
+
+	// Unsettled downgrade MUST fail with 409 WORKER_NOT_SETTLED.
+	dgMiB := int64(4096)
+	cUnsettled, _, unsettledBody, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/downgrade", HeartbeatRequest{
+		IdempotencyKey:  "pc-h2-dg-unsettled",
+		FencingToken:    dec1.FencingToken,
+		ExpectedVersion: dec4.Version,
+		DowngradeToMiB:  &dgMiB,
+		NewStageID:      "postprocess_rife",
+		WorkerSettled:   false,
+	})
+	if err != nil || cUnsettled != http.StatusConflict || unsettledBody["error_code"] != "WORKER_NOT_SETTLED" {
+		t.Fatalf("expected 409 WORKER_NOT_SETTLED, got code=%d body=%+v err=%v", cUnsettled, unsettledBody, err)
+	}
+
+	p2Proof := map[string]any{
+		"reclaimed":                  true,
+		"revoked_lease_id":           dec1.LeaseID,
+		"consumed_fencing_token":     dec1.FencingToken,
+		"sealed_gpu_epoch":           int64(11),
+		"supervisor_pid":             5202,
+		"supervisor_starttime_ticks": uint64(998877),
+		"sealed_pod_uid":             "pod-h3-p2",
+		"sealed_container_id":        cidP2,
+		"sealed_boot_id":             "boot-p2",
+	}
+
+	// Stale version=3 on downgrade MUST fail with 409 LEASE_VERSION_CONFLICT; tracked version=4 succeeds (29696 -> 4096 MiB, version=5).
+	cStaleDG, _, staleDGBody, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/downgrade", HeartbeatRequest{
+		IdempotencyKey:           "pc-h2-dg-stale",
+		FencingToken:             dec1.FencingToken,
+		ExpectedVersion:          3,
+		DowngradeToMiB:           &dgMiB,
+		NewStageID:               "postprocess_rife",
+		WorkerSettled:            true,
+		ReclaimMode:              "epoch_unload",
+		ReclaimProof:             p2Proof,
+		GPUEpoch:                 11,
+		SupervisorPID:            5202,
+		SupervisorStarttimeTicks: 998877,
+		PodUID:                   "pod-h3-p2",
+		ContainerID:              cidP2,
+		BootID:                   "boot-p2",
+		NextPodUID:               "pod-rife",
+		NextContainerID:          cidP3,
+		NextBootID:               "boot-rife",
+	})
+	if err != nil || cStaleDG != http.StatusConflict || staleDGBody["error_code"] != "LEASE_VERSION_CONFLICT" {
+		t.Fatalf("expected 409 LEASE_VERSION_CONFLICT on stale downgrade, got code=%d body=%+v err=%v", cStaleDG, staleDGBody, err)
+	}
+
+	cDG, dec5, _, err := doRuntimeJSON(ctx, srv.URL, fix.tokens["app-video"], http.MethodPost, "/internal/v1/gpu-scheduler/leases/"+dec1.LeaseID+"/downgrade", HeartbeatRequest{
+		IdempotencyKey:           "pc-h2-dg-ok",
+		FencingToken:             dec1.FencingToken,
+		ExpectedVersion:          dec4.Version,
+		DowngradeToMiB:           &dgMiB,
+		NewStageID:               "postprocess_rife",
+		WorkerSettled:            true,
+		ReclaimMode:              "epoch_unload",
+		ReclaimProof:             p2Proof,
+		GPUEpoch:                 11,
+		SupervisorPID:            5202,
+		SupervisorStarttimeTicks: 998877,
+		PodUID:                   "pod-h3-p2",
+		ContainerID:              cidP2,
+		BootID:                   "boot-p2",
+		NextPodUID:               "pod-rife",
+		NextContainerID:          cidP3,
+		NextBootID:               "boot-rife",
+	})
+	if err != nil || cDG != http.StatusOK || dec5.Version != 5 || dec5.PeakBudgetMiB != 4096 || dec5.StageID != "postprocess_rife" {
+		t.Fatalf("expected downgrade success version=5 budget=4096, got code=%d dec=%+v err=%v", cDG, dec5, err)
+	}
+
+	verifyAllCardHashChains(t, ctx, fix.pool, fix.stationID)
+}
