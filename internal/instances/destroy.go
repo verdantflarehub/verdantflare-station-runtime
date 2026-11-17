@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -25,8 +26,9 @@ type DestroyRequest struct {
 	InstanceID          string `json:"instance_id"`
 }
 type destroyState struct {
-	Create    CreateRequest `json:"create"`
-	SecretUID string        `json:"secret_uid"`
+	OrphanStart bool          `json:"orphan_start,omitempty"`
+	Create      CreateRequest `json:"create"`
+	SecretUID   string        `json:"secret_uid"`
 }
 type DestroyProgress struct {
 	OperationID string         `json:"operation_id"`
@@ -56,6 +58,60 @@ func orphanStartResourcesAbsent(ctx context.Context, client kubernetes.Interface
 		}
 	}
 	return nil
+}
+
+// Validate the complete set before deleting anything. Names alone are never ownership.
+func reapOrphanStartResources(ctx context.Context, client kubernetes.Interface, binding VolumeBinding) error {
+	ns := binding.Namespace
+	pods, err := client.CoreV1().Pods(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	services, err := client.CoreV1().Services(ns).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	owned := func(m metav1.ObjectMeta) bool {
+		return strings.HasPrefix(m.Name, "blender-run-") && m.UID != "" && m.ResourceVersion != "" && m.DeletionTimestamp == nil && m.Annotations[instanceKey] == binding.InstanceID && m.Annotations[stationKey] == binding.StationID && m.Annotations[organizationKey] == binding.OrganizationID
+	}
+	var deadPods []corev1.Pod
+	var deadServices []corev1.Service
+	for _, pod := range pods.Items {
+		relevant := pod.Annotations[instanceKey] == binding.InstanceID
+		for _, v := range pod.Spec.Volumes {
+			if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName == binding.PVCName {
+				relevant = true
+			}
+		}
+		if !relevant {
+			continue
+		}
+		if !owned(pod.ObjectMeta) || (pod.Status.Phase != corev1.PodSucceeded && pod.Status.Phase != corev1.PodFailed) {
+			return ErrBusy
+		}
+		deadPods = append(deadPods, pod)
+	}
+	for _, svc := range services.Items {
+		if svc.Annotations[instanceKey] == binding.InstanceID {
+			if !owned(svc.ObjectMeta) {
+				return ErrBusy
+			}
+			deadServices = append(deadServices, svc)
+		}
+	}
+	for _, pod := range deadPods {
+		uid, rv := pod.UID, pod.ResourceVersion
+		if err := client.CoreV1().Pods(ns).Delete(ctx, pod.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	for _, svc := range deadServices {
+		uid, rv := svc.UID, svc.ResourceVersion
+		if err := client.CoreV1().Services(ns).Delete(ctx, svc.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return orphanStartResourcesAbsent(ctx, client, ns, binding.InstanceID)
 }
 
 // Destroy revokes access only after a completed stop (or prepared, never-started
@@ -100,6 +156,7 @@ func (s *Service) Destroy(ctx context.Context, in DestroyRequest) (DestroyProgre
 			return out, err
 		}
 		orphanStart = action == "start" && status == "running" && stale
+		state.OrphanStart = orphanStart
 		if op != in.PreviousOperationID || (!orphanStart && ((action != "stop" && action != "create") || status != "succeeded" || phase != "stopped")) {
 			return out, ErrConflict
 		}
@@ -138,7 +195,10 @@ func (s *Service) Destroy(ctx context.Context, in DestroyRequest) (DestroyProgre
 			return out, ErrRetained
 		}
 		if orphanStart {
-			// Same instance advisory lock as Start: prove absence before fencing it.
+			// Same instance advisory lock as Start: remove only proven terminal leftovers.
+			if err = reapOrphanStartResources(ctx, s.Client, binding); err != nil {
+				return out, err
+			}
 			// Inspect rejects every Pod mounting this workspace, including terminating Pods.
 			if _, err = Inspect(ctx, s.Client, create.identity(), p.StorageProfile, binding.PVCName, &binding, nil); err != nil {
 				return out, err
@@ -164,6 +224,18 @@ func (s *Service) Destroy(ctx context.Context, in DestroyRequest) (DestroyProgre
 	}
 	if binding.Retained {
 		return out, ErrBinding
+	}
+	if out.Phase == "accepted" || out.Phase == "revoking" {
+		if !state.OrphanStart {
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.runtime_instance_executions WHERE operation_id=$1 AND instance_id=$2 AND error_code='ORPHAN_START_FENCED')`, in.PreviousOperationID, in.InstanceID).Scan(&state.OrphanStart); err != nil {
+				return out, err
+			}
+		}
+		if state.OrphanStart {
+			if err = reapOrphanStartResources(ctx, s.Client, binding); err != nil {
+				return out, err
+			}
+		}
 	}
 	if _, err = Inspect(ctx, s.Client, create.identity(), p.StorageProfile, binding.PVCName, &binding, nil); err != nil {
 		return out, err

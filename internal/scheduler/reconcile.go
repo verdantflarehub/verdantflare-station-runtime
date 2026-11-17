@@ -3561,6 +3561,10 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 	if err == nil {
 		residenciesSnap, err = loadResidencies(ctx, txRead, s.StationID, obs.NodeUID)
 	}
+	var cardsSnap []cardLockState
+	if err == nil {
+		cardsSnap, err = loadCards(ctx, txRead, s.StationID, obs.NodeUID, false)
+	}
 	rollbackTx(txRead)
 	if err != nil {
 		return err
@@ -3572,6 +3576,24 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 		residencyByInst[r.InstanceID] = r
 		if p := normPodUID(r.PodUID); p != "" {
 			residencyByPod[p] = r
+		}
+	}
+
+	var terminatedResidencies []residencyRow
+	for _, r := range residenciesSnap {
+		if r.ResidencyState == "zero_vram_standby" || r.ResidencyState == "quarantined" || r.PodUID == "" || s.Verifier == nil {
+			continue
+		}
+		absent, live := residencyPodAbsent(cardsSnap, r, now, s.maxTelemetryAge())
+		if live {
+			continue
+		}
+		if !(absent || (obs.LivePodUIDs != nil && !obs.LivePodUIDs[r.PodUID])) {
+			continue
+		}
+		result, verifyErr := s.Verifier.VerifyTerminated(ctx, VerifyTerminatedRequest{NodeUID: r.NodeUID, GPUUUID: r.GPUUUID, PodUID: r.PodUID, ContainerID: r.ContainerID, BootID: r.BootID, Mode: "container_exited"})
+		if verifyErr == nil && result.Verified && !result.UnkillableDState {
+			terminatedResidencies = append(terminatedResidencies, r)
 		}
 	}
 
@@ -3939,6 +3961,61 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 				if len(out.lease.GPUUUIDs) == 0 {
 					break
 				}
+			}
+		}
+	}
+
+	for _, r := range terminatedResidencies {
+		cardPresent := false
+		for _, c := range cards {
+			if c.NodeUID == r.NodeUID && c.GPUUUID == r.GPUUUID {
+				cardPresent = true
+			}
+		}
+		if !cardPresent {
+			continue
+		}
+		_, live := residencyPodAbsent(cards, r, s.now(), s.maxTelemetryAge())
+		if live {
+			continue
+		}
+		var boot, pod, cid, state string
+		var epoch, seq int64
+		err := tx.QueryRow(ctx, `SELECT boot_id, pod_uid, container_id, gpu_epoch, residency_seq, residency_state FROM station.gpu_instance_residency WHERE station_id=$1 AND instance_id=$2 AND node_uid=$3 AND gpu_uuid=$4 FOR UPDATE`, s.StationID, r.InstanceID, r.NodeUID, r.GPUUUID).Scan(&boot, &pod, &cid, &epoch, &seq, &state)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if boot != r.BootID || pod != r.PodUID || cid != r.ContainerID || epoch != r.GPUEpoch || seq != r.ResidencySeq || state != r.ResidencyState {
+			continue
+		}
+		var active bool
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM station.gpu_resource_leases WHERE station_id=$1 AND node_uid=$2 AND (replace(lower(pod_uid),'_','-')=replace(lower($3),'_','-') OR boot_id=$4) AND state IN ('leased','running','releasing','reclaiming','reconciling'))`, s.StationID, r.NodeUID, r.PodUID, r.BootID).Scan(&active); err != nil {
+			return err
+		}
+		if active {
+			continue
+		}
+		tag, err := tx.Exec(ctx, `UPDATE station.gpu_instance_residency SET residency_state='zero_vram_standby', human_protected=FALSE, gui_connection_alive=FALSE, dirty=FALSE, snapshot_in_progress=FALSE, snapshot_required=FALSE, pinned_budget_mib=0, vram_allocated_mib=0, blocking_reason='reconciled_terminated', residency_seq=residency_seq+1, updated_at=now() WHERE station_id=$1 AND instance_id=$2 AND boot_id=$3 AND gpu_epoch=$4 AND residency_seq=$5 AND residency_state=$6`, s.StationID, r.InstanceID, r.BootID, r.GPUEpoch, r.ResidencySeq, r.ResidencyState)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			continue
+		}
+		for i := range cards {
+			if cards[i].NodeUID != r.NodeUID || cards[i].GPUUUID != r.GPUUUID {
+				continue
+			}
+			cards[i].AttributedProcesses = filterOutHolderProcesses(cards[i].AttributedProcesses, r.PodUID, r.ContainerID)
+			raw, _ := json.Marshal(cards[i].AttributedProcesses)
+			if _, err = tx.Exec(ctx, `UPDATE station.gpu_physical_cards SET attributed_processes=$4, updated_at=now() WHERE station_id=$1 AND node_uid=$2 AND gpu_uuid=$3`, s.StationID, r.NodeUID, r.GPUUUID, raw); err != nil {
+				return err
+			}
+			if _, _, err = appendCardEvent(ctx, tx, &cards[i], eventRecordInput{RunNonce: obs.RunNonce, CorrelationEventUUID: corrUUID, EntityType: "residency", EntityID: r.InstanceID, FromState: r.ResidencyState, ToState: "zero_vram_standby", ResidencySeq: r.ResidencySeq + 1, GPUEpoch: r.GPUEpoch, ReasonCode: "RECONCILED_TERMINATED"}); err != nil {
+				return err
 			}
 		}
 	}
@@ -5127,4 +5204,25 @@ func (e HTTPResidencyEvictor) RevokeLease(ctx context.Context, cmd RevokeLeaseCo
 		return out, fmt.Errorf("revoke-lease not settled (revoked=%v settled=%v)", out.Revoked, out.Settled)
 	}
 	return out, nil
+}
+
+// A live Pod on ANY card vetoes reclamation. Telemetry-only absence requires
+// every card on the node to have a current sample, not merely an old timestamp.
+func residencyPodAbsent(cards []cardLockState, r residencyRow, now time.Time, maxAge time.Duration) (absent, live bool) {
+	seen, fresh := false, true
+	for _, c := range cards {
+		if c.NodeUID != r.NodeUID {
+			continue
+		}
+		seen = true
+		if c.TelemetrySampledAt == nil || now.Sub(*c.TelemetrySampledAt) > maxAge {
+			fresh = false
+		}
+		for _, p := range c.ActiveGPUPods {
+			if normPodUID(p.PodUID) == normPodUID(r.PodUID) && r.PodUID != "" {
+				return false, true
+			}
+		}
+	}
+	return seen && fresh && r.PodUID != "", false
 }

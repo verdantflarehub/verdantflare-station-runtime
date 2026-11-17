@@ -408,6 +408,14 @@ type activeLeaseRow struct {
 }
 
 func lockCardsForUpdate(ctx context.Context, tx pgx.Tx, stationID, nodeUID string) ([]cardLockState, error) {
+	return loadCards(ctx, tx, stationID, nodeUID, true)
+}
+
+func loadCards(ctx context.Context, tx pgx.Tx, stationID, nodeUID string, lock bool) ([]cardLockState, error) {
+	suffix := ""
+	if lock {
+		suffix = " FOR UPDATE"
+	}
 	rows, err := tx.Query(ctx, `
 		SELECT station_id::text, node_uid, node_name, gpu_uuid, gpu_index,
 		       total_vram_mib, driver_overhead_mib, measured_free_vram_mib, measured_used_vram_mib,
@@ -419,8 +427,7 @@ func lockCardsForUpdate(ctx context.Context, tx pgx.Tx, stationID, nodeUID strin
 		  FROM station.gpu_physical_cards
 		 WHERE station_id = $1 AND ($2 = '' OR node_uid = $2)
 		 ORDER BY node_uid ASC, gpu_uuid ASC
-		   FOR UPDATE
-	`, stationID, nodeUID)
+	`+suffix, stationID, nodeUID)
 	if err != nil {
 		return nil, err
 	}

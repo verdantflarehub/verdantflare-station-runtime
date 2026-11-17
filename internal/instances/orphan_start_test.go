@@ -38,3 +38,56 @@ func TestOrphanStartAbsenceFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+func TestReapOrphanStartTerminalResources(t *testing.T) {
+	for _, shape := range []string{"service_only", "succeeded", "failed", "running", "pending", "terminating", "foreign"} {
+		t.Run(shape, func(t *testing.T) {
+			b := VolumeBinding{Identity: Identity{InstanceID: "orphan", StationID: "station", OrganizationID: "org"}, Namespace: "app", PVCName: "workspace"}
+			meta := metav1.ObjectMeta{Name: "blender-run-old", Namespace: "app", UID: "uid", ResourceVersion: "12", Annotations: map[string]string{instanceKey: b.InstanceID, stationKey: b.StationID, organizationKey: b.OrganizationID}}
+			svc := &corev1.Service{ObjectMeta: *meta.DeepCopy()}
+			objects := []runtime.Object{svc}
+			if shape != "service_only" {
+				pod := &corev1.Pod{ObjectMeta: *meta.DeepCopy(), Status: corev1.PodStatus{Phase: corev1.PodSucceeded}, Spec: corev1.PodSpec{Volumes: []corev1.Volume{{Name: "workspace", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: b.PVCName}}}}}}
+				switch shape {
+				case "failed":
+					pod.Status.Phase = corev1.PodFailed
+				case "running":
+					pod.Status.Phase = corev1.PodRunning
+				case "pending":
+					pod.Status.Phase = corev1.PodPending
+				case "terminating":
+					now := metav1.Now()
+					pod.DeletionTimestamp = &now
+				case "foreign":
+					pod.Annotations[organizationKey] = "other"
+				}
+				objects = append(objects, pod)
+			}
+			client := fake.NewSimpleClientset(objects...)
+			err := reapOrphanStartResources(context.Background(), client, b)
+			safe := shape == "service_only" || shape == "succeeded" || shape == "failed"
+			if safe && err != nil {
+				t.Fatal(err)
+			}
+			if !safe && !errors.Is(err, ErrBusy) {
+				t.Fatal("unsafe cleanup", err)
+			}
+			deletes := 0
+			for _, a := range client.Actions() {
+				if a.GetVerb() == "delete" {
+					deletes++
+					opts := a.(ktesting.DeleteAction).GetDeleteOptions()
+					if opts.Preconditions == nil || opts.Preconditions.UID == nil || opts.Preconditions.ResourceVersion == nil || string(*opts.Preconditions.UID) != "uid" || *opts.Preconditions.ResourceVersion != "12" {
+						t.Fatal("missing exact preconditions")
+					}
+				}
+			}
+			if !safe && deletes != 0 {
+				t.Fatal("mutated before validation")
+			}
+			if safe && deletes != len(objects) {
+				t.Fatal("leftover resources")
+			}
+		})
+	}
+}
