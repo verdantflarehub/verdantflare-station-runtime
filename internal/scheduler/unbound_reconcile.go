@@ -41,14 +41,11 @@ func isEligibleUnboundLease(l activeLeaseRow) bool {
 	if strings.TrimSpace(l.PodUID) != "" || strings.TrimSpace(l.ContainerID) != "" || strings.TrimSpace(l.BootID) != "" {
 		return false
 	}
-	if l.State != "leased" && l.State != "reconciling" && l.State != "reclaiming" {
+	if l.State != "leased" && l.State != "running" && l.State != "reconciling" && l.State != "reclaiming" {
 		return false
 	}
 	if len(l.ResponseCache) > 0 {
 		if s, ok := l.ResponseCache["last_bind_key"].(string); ok && strings.TrimSpace(s) != "" {
-			return false
-		}
-		if s, ok := l.ResponseCache["last_hb_key"].(string); ok && strings.TrimSpace(s) != "" {
 			return false
 		}
 		if dispatched, ok := l.ResponseCache["runtime_dispatched"].(bool); ok && dispatched {
@@ -120,7 +117,7 @@ func leaseGrantedAt(l activeLeaseRow) time.Time {
 }
 
 func isUnboundBindDeadlineExceeded(l activeLeaseRow, now time.Time) bool {
-	if !isEligibleUnboundLease(l) || l.State != "leased" {
+	if !isEligibleUnboundLease(l) || (l.State != "leased" && l.State != "running") {
 		return false
 	}
 	grantedAt := leaseGrantedAt(l)
@@ -141,9 +138,9 @@ func isRevokedOrPastUnboundDeadline(
 	if _, sealed := hasUnboundSeal(reclaimProof); sealed {
 		return true
 	}
-	if state == "leased" && strings.TrimSpace(podUID) == "" && strings.TrimSpace(containerID) == "" && strings.TrimSpace(bootID) == "" {
+	if (state == "leased" || state == "running") && strings.TrimSpace(podUID) == "" && strings.TrimSpace(containerID) == "" && strings.TrimSpace(bootID) == "" {
 		if s, ok := responseCache["last_bind_key"].(string); !ok || strings.TrimSpace(s) == "" {
-			if sHB, okHB := responseCache["last_hb_key"].(string); !okHB || strings.TrimSpace(sHB) == "" {
+			if dispatched, okD := responseCache["runtime_dispatched"].(bool); !okD || !dispatched {
 				grantedAt := leaseGrantedAtFromParts(responseCache, state, createdAt, updatedAt)
 				if !grantedAt.IsZero() && now.After(grantedAt.Add(UnboundBindDeadline)) {
 					return true

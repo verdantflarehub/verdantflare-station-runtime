@@ -144,6 +144,14 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, status, dec)
 
+	case r.Method == http.MethodGet && path == "/internal/v1/gpu-scheduler/leases":
+		leases, err := h.Service.ListLeases(r.Context(), caller, r.URL.Query().Get("holder_app_id"))
+		if err != nil {
+			writeMappedError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"leases": leases})
+
 	case strings.HasPrefix(path, "/internal/v1/gpu-scheduler/leases/"):
 		tail := strings.TrimPrefix(path, "/internal/v1/gpu-scheduler/leases/")
 		parts := strings.Split(tail, "/")

@@ -40,13 +40,13 @@ func TestUnboundLeaseFiveGatesAndBindDeadlineUnit(t *testing.T) {
 			},
 		},
 		{
-			name: "prior bound heartbeat key",
+			name: "prior bound target key",
 			lease: activeLeaseRow{
 				LeaseID:       "01a1e953-0000-7000-8000-000000000003",
 				NodeUID:       nodeUID,
 				GPUUUIDs:      []string{gpu1},
 				State:         "reconciling",
-				ResponseCache: map[string]any{"last_hb_key": "hb-1"},
+				ResponseCache: map[string]any{"last_bind_key": "bind-1"},
 				ExpiresAt:     t0.Add(-30 * time.Second),
 			},
 		},

@@ -3458,7 +3458,26 @@ func TestUnboundLeaseFiveGateConvergenceAndBindDeadlineDB(t *testing.T) {
 		t.Fatalf("Acquire unbound lease: %+v (%v)", unboundDec, err)
 	}
 
-	fix.advanceTime(61 * time.Second)
+	// Simulate pre-bind unbound heartbeat (e.g. speech-mcp 0.2.10 renewing with empty pod_uid while waiting on /health).
+	fix.advanceTime(20 * time.Second)
+	hbUnbound, err := fix.svc.Heartbeat(ctx, imgCaller, unboundDec.LeaseID, HeartbeatRequest{
+		IdempotencyKey: "prebind-hb-20s",
+		FencingToken:   unboundDec.FencingToken,
+		TTLSeconds:     300,
+	})
+	if err != nil || hbUnbound.State != "running" {
+		t.Fatalf("Heartbeat unbound at 20s: %+v (%v)", hbUnbound, err)
+	}
+	ownLeases, err := fix.svc.ListLeases(ctx, imgCaller, "app-image")
+	if err != nil || len(ownLeases) != 2 {
+		t.Fatalf("expected ListLeases to return 2 own active leases, got %d (%v)", len(ownLeases), err)
+	}
+	if _, err := fix.svc.ListLeases(ctx, imgCaller, "speech-mcp"); !errors.Is(err, ErrForbiddenCaller) {
+		t.Fatalf("expected cross-app ListLeases to fail ErrForbiddenCaller, got %v", err)
+	}
+
+	// Advance past 60s UNBOUND_BIND_DEADLINE from initial grant (20s + 41s = 61s): unbound heartbeat must NOT extend bind deadline!
+	fix.advanceTime(41 * time.Second)
 	if _, err := fix.svc.BindTarget(ctx, imgCaller, unboundDec.LeaseID, BindTargetRequest{
 		IdempotencyKey: "late-bind-1",
 		FencingToken:   unboundDec.FencingToken,

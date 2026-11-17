@@ -1379,6 +1379,56 @@ func (s *Service) GetLease(ctx context.Context, caller CallerIdentity, leaseID s
 	return dec, nil
 }
 
+func (s *Service) ListLeases(ctx context.Context, caller CallerIdentity, holderAppID string) ([]LeaseDecision, error) {
+	if caller.Kind != CallerConsumer && caller.Kind != CallerAdmin {
+		return nil, ErrForbiddenCaller
+	}
+	targetApp := strings.TrimSpace(holderAppID)
+	if caller.Kind != CallerAdmin {
+		if targetApp != "" && targetApp != caller.AppID {
+			return nil, ErrForbiddenCaller
+		}
+		targetApp = caller.AppID
+	}
+	rows, err := s.Pool.Query(ctx, `
+		SELECT lease_id::text, holder_app_id, holder_task_id, attempt_id, stage_id,
+		       node_uid, pod_uid, container_id, boot_id, idempotency_key, request_sha256,
+		       candidate_gpu_uuids, gpu_uuids, reserved_gpu_uuids, card_count, k8s_slots_required,
+		       peak_budget_mib, startup_free_min_mib, headroom_override_mib, fencing_token,
+		       priority, bypass_count, state, blocking_reason, blocking_holder_id,
+		       expires_at, version, created_at
+		  FROM station.gpu_resource_leases
+		 WHERE station_id = $1
+		   AND ($2 = '' OR holder_app_id = $2)
+		   AND state NOT IN ('released', 'expired')
+		 ORDER BY created_at ASC
+	`, s.StationID, targetApp)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := []LeaseDecision{}
+	for rows.Next() {
+		var r activeLeaseRow
+		if err := rows.Scan(
+			&r.LeaseID, &r.HolderAppID, &r.HolderTaskID, &r.AttemptID, &r.StageID,
+			&r.NodeUID, &r.PodUID, &r.ContainerID, &r.BootID, &r.IdempotencyKey, &r.RequestSHA256,
+			&r.CandidateGPUUUIDs, &r.GPUUUIDs, &r.ReservedGPUUUIDs, &r.CardCount, &r.K8sSlotsRequired,
+			&r.PeakBudgetMiB, &r.StartupFreeMinMiB, &r.HeadroomOverride, &r.FencingToken,
+			&r.Priority, &r.BypassCount, &r.State, &r.BlockingReason, &r.BlockingHolderID,
+			&r.ExpiresAt, &r.Version, &r.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, decisionFromRow(r, 0, 0))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func computeHeartbeatHash(leaseID string, req HeartbeatRequest) string {
 	if strings.TrimSpace(req.NextPodUID) != "" || strings.TrimSpace(req.NextContainerID) != "" || strings.TrimSpace(req.NextBootID) != "" {
 		return computeCanonicalHash(leaseID, req.FencingToken, req.ExpectedVersion, req.DowngradeToMiB, req.NewStageID, req.WorkerSettled, req.NextPodUID, req.NextContainerID, req.NextBootID)
@@ -4120,13 +4170,20 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 		return err
 	}
 	validReservable := map[string]bool{}
-	hasReconcilingLeaseByNode := map[string]bool{}
+	hasReconcilingLeaseByNodeWide := map[string]bool{}
+	hasReconcilingLeaseByCard := map[string]bool{}
 	for _, rl := range remainingLeases {
 		if rl.State == "queued" || rl.State == "draining" {
 			validReservable[rl.LeaseID] = true
 		}
 		if rl.State == "reconciling" {
-			hasReconcilingLeaseByNode[rl.NodeUID] = true
+			if len(rl.GPUUUIDs) == 0 {
+				hasReconcilingLeaseByNodeWide[rl.NodeUID] = true
+			} else {
+				for _, g := range rl.GPUUUIDs {
+					hasReconcilingLeaseByCard[rl.NodeUID+"|"+g] = true
+				}
+			}
 		}
 	}
 	for i := range cards {
@@ -4152,12 +4209,14 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 				return err
 			}
 		}
+		cardKey := cards[i].NodeUID + "|" + cards[i].GPUUUID
 		if cards[i].State == "reconciling" &&
 			(cards[i].StateReason == "UNKNOWN_NODE_STATE" ||
 				cards[i].StateReason == "PENDING_LEASE_RECONCILIATION" ||
 				cards[i].StateReason == "UNBOUND_LEASE_SEALED") &&
-			!hasReconcilingLeaseByNode[cards[i].NodeUID] &&
-			!unknownCardInRound[cards[i].NodeUID+"|"+cards[i].GPUUUID] {
+			!hasReconcilingLeaseByNodeWide[cards[i].NodeUID] &&
+			!hasReconcilingLeaseByCard[cardKey] &&
+			!unknownCardInRound[cardKey] {
 			cards[i].State = "ready"
 			cards[i].StateReason = ""
 			if _, err := tx.Exec(ctx, `
