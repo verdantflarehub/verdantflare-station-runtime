@@ -76,3 +76,11 @@ func (s *Service) pinnedProfile(id string, hash []byte) (HelperProfile, bool) {
 	}
 	return s.withCapacity(p), true
 }
+
+func (s *Service) compatibleReservation(b VolumeBinding, in Identity, p StorageProfile) bool {
+	if !sameWorkspacePool(b, in, p) {
+		return false
+	}
+	_, ok := s.pinnedProfile(b.ProfileID, b.ProfileHash)
+	return ok
+}

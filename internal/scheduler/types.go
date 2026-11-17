@@ -32,6 +32,12 @@ const (
 	DefaultPerCardTimeSlices int           = 6
 	DefaultLeaseTTLSeconds   int64         = 90
 	DefaultMaxTelemetryAge   time.Duration = 15 * time.Second
+
+	// E01 blocker remediation constants: unbound lease bind deadline & 5-gate idle GPU convergence.
+	UnboundBindDeadline            time.Duration = 60 * time.Second
+	UnboundReconcileGrace          time.Duration = 15 * time.Second
+	IdleDriverNoiseCapMiB          int64         = 1024
+	ReasonReconciledUnboundIdleGPU string        = "RECONCILED_UNBOUND_IDLE_GPU"
 )
 
 const (
@@ -46,27 +52,27 @@ const (
 )
 
 var (
-	ErrUnauthenticated      = errors.New("UNAUTHENTICATED")
-	ErrForbiddenCaller      = errors.New("CALLER_IDENTITY_MISMATCH")
-	ErrInvalidRequest       = errors.New("INVALID_REQUEST")
-	ErrIdempotencyConflict  = errors.New("IDEMPOTENCY_CONFLICT")
-	ErrVersionConflict      = errors.New("LEASE_VERSION_CONFLICT")
-	ErrLeaseNotFound        = errors.New("LEASE_NOT_FOUND")
-	ErrLeaseInactive        = errors.New("LEASE_NOT_ACTIVE")
-	ErrFencingRevoked       = errors.New("FENCING_TOKEN_REVOKED")
-	ErrWorkerNotSettled     = errors.New("WORKER_NOT_SETTLED")
-	ErrDowngradeDisabled    = errors.New("LOCK_DOWNGRADE_DISABLED_BEFORE_CUTOVER")
-	ErrCrossCardHoldAndWait = errors.New("CROSS_CARD_HOLD_AND_WAIT_FORBIDDEN")
-	ErrTopologyUnsatisfied  = errors.New("TOPOLOGY_UNSATISFIABLE")
-	ErrCutoverBlocked       = errors.New("CUTOVER_BLOCKED_UNUPGRADED_OR_UNDRAINED")
-	ErrNodeStateUnknown     = errors.New("UNKNOWN_NODE_STATE")
-	ErrReclaimQuarantined   = errors.New("RECLAIM_FAILED_QUARANTINED")
-	ErrResidencyNotFound    = errors.New("RESIDENCY_NOT_FOUND")
-	ErrGUIEditLeaseHeld     = errors.New("GUI_EDIT_LEASE_HELD")
+	ErrUnauthenticated       = errors.New("UNAUTHENTICATED")
+	ErrForbiddenCaller       = errors.New("CALLER_IDENTITY_MISMATCH")
+	ErrInvalidRequest        = errors.New("INVALID_REQUEST")
+	ErrIdempotencyConflict   = errors.New("IDEMPOTENCY_CONFLICT")
+	ErrVersionConflict       = errors.New("LEASE_VERSION_CONFLICT")
+	ErrLeaseNotFound         = errors.New("LEASE_NOT_FOUND")
+	ErrLeaseInactive         = errors.New("LEASE_NOT_ACTIVE")
+	ErrFencingRevoked        = errors.New("FENCING_TOKEN_REVOKED")
+	ErrWorkerNotSettled      = errors.New("WORKER_NOT_SETTLED")
+	ErrDowngradeDisabled     = errors.New("LOCK_DOWNGRADE_DISABLED_BEFORE_CUTOVER")
+	ErrCrossCardHoldAndWait  = errors.New("CROSS_CARD_HOLD_AND_WAIT_FORBIDDEN")
+	ErrTopologyUnsatisfied   = errors.New("TOPOLOGY_UNSATISFIABLE")
+	ErrCutoverBlocked        = errors.New("CUTOVER_BLOCKED_UNUPGRADED_OR_UNDRAINED")
+	ErrNodeStateUnknown      = errors.New("UNKNOWN_NODE_STATE")
+	ErrReclaimQuarantined    = errors.New("RECLAIM_FAILED_QUARANTINED")
+	ErrResidencyNotFound     = errors.New("RESIDENCY_NOT_FOUND")
+	ErrGUIEditLeaseHeld      = errors.New("GUI_EDIT_LEASE_HELD")
 	ErrInstanceActiveCompute = errors.New("INSTANCE_ACTIVE_COMPUTE")
-	ErrAlreadyZeroVRAM      = errors.New("ALREADY_ZERO_VRAM")
-	ErrInstanceNotEvictable = errors.New("INSTANCE_NOT_EVICTABLE")
-	ErrConfirmationRequired = errors.New("CONFIRMATION_REQUIRED")
+	ErrAlreadyZeroVRAM       = errors.New("ALREADY_ZERO_VRAM")
+	ErrInstanceNotEvictable  = errors.New("INSTANCE_NOT_EVICTABLE")
+	ErrConfirmationRequired  = errors.New("CONFIRMATION_REQUIRED")
 )
 
 var sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -248,14 +254,14 @@ type LeaseDecision struct {
 }
 
 type HeartbeatRequest struct {
-	IdempotencyKey  string         `json:"idempotency_key"`
-	RequestSHA256   string         `json:"request_sha256,omitempty"`
-	FencingToken    int64          `json:"fencing_token"`
-	ExpectedVersion int64          `json:"expected_version,omitempty"`
-	TTLSeconds      int64          `json:"ttl_seconds,omitempty"`
-	DowngradeToMiB  *int64         `json:"downgrade_to_mib,omitempty"`
-	NewStageID      string         `json:"new_stage_id,omitempty"`
-	WorkerSettled   bool           `json:"worker_settled,omitempty"`
+	IdempotencyKey           string         `json:"idempotency_key"`
+	RequestSHA256            string         `json:"request_sha256,omitempty"`
+	FencingToken             int64          `json:"fencing_token"`
+	ExpectedVersion          int64          `json:"expected_version,omitempty"`
+	TTLSeconds               int64          `json:"ttl_seconds,omitempty"`
+	DowngradeToMiB           *int64         `json:"downgrade_to_mib,omitempty"`
+	NewStageID               string         `json:"new_stage_id,omitempty"`
+	WorkerSettled            bool           `json:"worker_settled,omitempty"`
 	GPUEpoch                 int64          `json:"gpu_epoch,omitempty"`
 	SupervisorPID            int            `json:"supervisor_pid,omitempty"`
 	SupervisorStarttimeTicks uint64         `json:"supervisor_starttime_ticks,omitempty"`
@@ -391,7 +397,7 @@ type VerifyTerminatedRequest struct {
 	SupervisorStarttimeTicks uint64                 `json:"supervisor_starttime_ticks,omitempty"`
 	ResidentProcs            []ResidentProcIdentity `json:"resident_procs,omitempty"`
 	EpochFenceConfirmed      bool                   `json:"epoch_fence_confirmed,omitempty"`
-	Mode                     string                 `json:"mode"` // "epoch_unload", "warm_idle_settled", or "container_exited"
+	Mode                     string                 `json:"mode"` // "epoch_unload", "warm_idle_settled", "container_exited", or "card_idle"
 }
 
 type VerifyTerminatedResult struct {
@@ -401,6 +407,7 @@ type VerifyTerminatedResult struct {
 	GPUProcessCount     int            `json:"gpu_process_count"`
 	CgroupWorkerCount   int            `json:"cgroup_worker_count"`
 	MeasuredFreeVRAMMiB int64          `json:"measured_free_vram_mib"`
+	MeasuredUsedVRAMMiB int64          `json:"measured_used_vram_mib,omitempty"`
 	SurvivingPIDs       []int          `json:"surviving_pids,omitempty"`
 	UnkillableDState    bool           `json:"unkillable_d_state"`
 	ErrorCode           string         `json:"error_code,omitempty"`

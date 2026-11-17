@@ -3,6 +3,7 @@ package instances
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,21 +26,32 @@ type savedSourceRecovery struct {
 	Source         *WorkerSource     `json:"source,omitempty"`
 }
 
-func (s startState) sourceRecoveryProof() *SourceRecoveryProof {
+func (s startState) sourceRecoveryProof(in StartRequest) *SourceRecoveryProof {
 	if s.SavedRecovery == nil {
 		return nil
+	}
+	if s.SavedRecovery.Source != nil && *s.SavedRecovery.Source == in.source() {
+		// Working copy was verified unchanged by the read-only helper: effective source
+		// equals the original immutable StartRequest source, so once helper cleanup reaches
+		// "ready" no divergent source_recovery override is emitted.
+		if s.SavedRecovery.Stage == "ready" {
+			return nil
+		}
+		return &SourceRecoveryProof{PreviousWorker: s.SavedRecovery.PreviousWorker}
 	}
 	return &SourceRecoveryProof{PreviousWorker: s.SavedRecovery.PreviousWorker, Source: s.SavedRecovery.Source}
 }
 
 // The immutable request remains the original source. Only a recorded, complete
 // read-only observation can provide the effective source for this execution.
+// Both unmodified (*r.Source == in.source()) and modified (*r.Source != in.source())
+// working copies are accepted after read-only helper verification.
 func effectiveStart(in StartRequest, state startState, p HelperProfile) (StartRequest, error) {
 	r := state.SavedRecovery
 	if r == nil {
 		return in, nil
 	}
-	if r.Stage != "ready" || r.Source == nil || !r.Source.valid(p.MaxFileBytes) || r.Source.Empty || r.Source.SourceRevisionID != in.SourceRevisionID || *r.Source == in.source() || r.PreviousWorker.PodUID == "" || r.PreviousWorker.ServiceUID == "" || r.Helper.PodUID == "" || r.Helper.ServiceUID == "" {
+	if r.Stage != "ready" || r.Source == nil || !r.Source.valid(p.MaxFileBytes) || r.Source.Empty || r.Source.SourceRevisionID != in.SourceRevisionID || r.PreviousWorker.PodUID == "" || r.PreviousWorker.ServiceUID == "" || r.Helper.PodUID == "" || r.Helper.ServiceUID == "" {
 		return in, ErrBinding
 	}
 	in.SHA256, in.Size, in.Empty = r.Source.SHA256, r.Source.Size, r.Source.Empty
@@ -64,16 +76,13 @@ func validateRecoveryOrigin(next StartRequest, p HelperProfile, input, state []b
 }
 
 func verifyCurrentTerminal(ctx context.Context, client kubernetes.Interface, in StartRequest, p HelperProfile, b VolumeBinding, worker WorkerObservation, allowMissing bool) error {
-	desired, _, err := workerObjects(in.identity(), p, b, in.OperationID, in.source())
-	if err != nil {
-		return err
-	}
-	pod, err := client.CoreV1().Pods(p.Namespace).Get(ctx, desired.Name, metav1.GetOptions{})
+	expectedName := "blender-run-" + strings.ReplaceAll(in.OperationID, "-", "")
+	pod, err := client.CoreV1().Pods(p.Namespace).Get(ctx, expectedName, metav1.GetOptions{})
 	if !(allowMissing && apierrors.IsNotFound(err)) {
 		if err != nil {
 			return err
 		}
-		if worker.PodName != desired.Name || !workerPodMatches(pod, desired, worker.PodUID) {
+		if !terminalWorkerPodOwned(pod, in.identity(), p, b, in.OperationID, worker.PodName, worker.PodUID) {
 			return ErrBinding
 		}
 	}
@@ -92,7 +101,7 @@ func (s *Service) advanceSavedRecovery(ctx context.Context, in StartRequest, cre
 		if err := verifyCurrentTerminal(ctx, s.Client, in, p, b, r.PreviousWorker, true); err != nil {
 			return err
 		}
-		gone, err := removeWorker(ctx, s.Client, in, p, b, r.PreviousWorker)
+		gone, err := removeTerminalWorker(ctx, s.Client, in, p, b, r.PreviousWorker)
 		if err != nil {
 			return err
 		}
@@ -120,7 +129,7 @@ func (s *Service) advanceSavedRecovery(ctx context.Context, in StartRequest, cre
 		if err != nil {
 			return err
 		}
-		if source == nil || !source.valid(p.MaxFileBytes) || source.Empty || source.SourceRevisionID != in.SourceRevisionID || *source == in.source() {
+		if source == nil || !source.valid(p.MaxFileBytes) || source.Empty || source.SourceRevisionID != in.SourceRevisionID {
 			return ErrBinding
 		}
 		r.Source, r.Stage = source, "removing_helper"

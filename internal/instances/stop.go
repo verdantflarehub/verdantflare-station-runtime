@@ -145,7 +145,7 @@ func (s *Service) Stop(ctx context.Context, in StopRequest) (StopProgress, error
 	if err != nil {
 		return out, err
 	}
-	if !sameReservation(binding, start.identity(), p.StorageProfile) || binding.Retained {
+	if !s.compatibleReservation(binding, start.identity(), p.StorageProfile) || binding.Retained {
 		return out, ErrBinding
 	}
 	start, err = effectiveStart(start, state.Execution, p)

@@ -401,10 +401,12 @@ type activeLeaseRow struct {
 	State             string
 	BlockingReason    string
 	BlockingHolderID  string
+	ReclaimProof      map[string]any
 	ResponseCache     map[string]any
 	ExpiresAt         time.Time
 	Version           int64
 	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 func lockCardsForUpdate(ctx context.Context, tx pgx.Tx, stationID, nodeUID string) ([]cardLockState, error) {
@@ -466,7 +468,7 @@ func loadActiveLeases(ctx context.Context, tx pgx.Tx, stationID, nodeUID string)
 		       candidate_gpu_uuids, gpu_uuids, reserved_gpu_uuids, card_count, k8s_slots_required,
 		       peak_budget_mib, startup_free_min_mib, headroom_override_mib, fencing_token,
 		       priority, bypass_count, state, blocking_reason, blocking_holder_id,
-		       response_cache, expires_at, version, created_at
+		       reclaim_proof, response_cache, expires_at, version, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND ($2 = '' OR node_uid = $2)
 		   AND state NOT IN ('released', 'expired')
@@ -481,16 +483,20 @@ func loadActiveLeases(ctx context.Context, tx pgx.Tx, stationID, nodeUID string)
 	var out []activeLeaseRow
 	for rows.Next() {
 		var r activeLeaseRow
-		var cacheRaw []byte
+		var proofRaw, cacheRaw []byte
 		if err := rows.Scan(
 			&r.LeaseID, &r.HolderAppID, &r.HolderTaskID, &r.AttemptID, &r.StageID,
 			&r.NodeUID, &r.PodUID, &r.ContainerID, &r.BootID, &r.IdempotencyKey, &r.RequestSHA256,
 			&r.CandidateGPUUUIDs, &r.GPUUUIDs, &r.ReservedGPUUUIDs, &r.CardCount, &r.K8sSlotsRequired,
 			&r.PeakBudgetMiB, &r.StartupFreeMinMiB, &r.HeadroomOverride, &r.FencingToken,
 			&r.Priority, &r.BypassCount, &r.State, &r.BlockingReason, &r.BlockingHolderID,
-			&cacheRaw, &r.ExpiresAt, &r.Version, &r.CreatedAt,
+			&proofRaw, &cacheRaw, &r.ExpiresAt, &r.Version, &r.CreatedAt, &r.UpdatedAt,
 		); err != nil {
 			return nil, err
+		}
+		r.ReclaimProof = map[string]any{}
+		if len(proofRaw) > 0 {
+			_ = json.Unmarshal(proofRaw, &r.ReclaimProof)
 		}
 		r.ResponseCache = map[string]any{}
 		if len(cacheRaw) > 0 {
@@ -1335,6 +1341,7 @@ func (s *Service) acquireInternal(ctx context.Context, caller CallerIdentity, ra
 			}
 		}
 
+		grantedAtStr := now.UTC().Format(time.RFC3339Nano)
 		fromState := ""
 		if !isNew {
 			fromState = existingState
@@ -1345,13 +1352,14 @@ func (s *Service) acquireInternal(ctx context.Context, caller CallerIdentity, ra
 				       pod_uid = CASE WHEN pod_uid = '' AND $5 <> '' THEN $5 ELSE pod_uid END,
 				       container_id = CASE WHEN container_id = '' AND $6 <> '' THEN $6 ELSE container_id END,
 				       boot_id = CASE WHEN boot_id = '' AND $7 <> '' THEN $7 ELSE boot_id END,
+				       response_cache = jsonb_set(COALESCE(response_cache, '{}'::jsonb), '{granted_at}', to_jsonb($9::text), true),
 				       expires_at = $8, version = version + 1, updated_at = now()
 				 WHERE station_id = $1 AND lease_id = $2
-			`, s.StationID, leaseID, grantedGPUs, maxFence, req.PodUID, req.ContainerID, req.BootID, expiresAt); err != nil {
+			`, s.StationID, leaseID, grantedGPUs, maxFence, req.PodUID, req.ContainerID, req.BootID, expiresAt, grantedAtStr); err != nil {
 				return LeaseDecision{}, err
 			}
 		} else {
-			initCacheRaw, _ := json.Marshal(map[string]any{"acquire_req": req})
+			initCacheRaw, _ := json.Marshal(map[string]any{"acquire_req": req, "granted_at": grantedAtStr})
 			if _, err := tx.Exec(ctx, `
 				INSERT INTO station.gpu_resource_leases(
 					lease_id, station_id, node_uid, holder_app_id, holder_task_id, attempt_id, stage_id,

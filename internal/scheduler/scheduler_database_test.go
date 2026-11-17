@@ -70,11 +70,11 @@ func (s staticTestInstanceDirectory) LookupInstance(_ context.Context, _, instan
 }
 
 type fakeVerifier struct {
-	mu      sync.Mutex
-	byKey   map[string]VerifyTerminatedResult
-	defRes  VerifyTerminatedResult
-	defErr  error
-	calls   []VerifyTerminatedRequest
+	mu     sync.Mutex
+	byKey  map[string]VerifyTerminatedResult
+	defRes VerifyTerminatedResult
+	defErr error
+	calls  []VerifyTerminatedRequest
 }
 
 func (f *fakeVerifier) VerifyTerminated(_ context.Context, req VerifyTerminatedRequest) (VerifyTerminatedResult, error) {
@@ -259,16 +259,16 @@ func setupSchedulerDB(t *testing.T) *schedulerFixture {
 	}
 
 	tokens := map[string]string{
-		"admin":          strings.Repeat("a", 40),
-		"node_agent":     strings.Repeat("n", 40),
-		"app-video":      strings.Repeat("v", 40),
-		"app-image":      strings.Repeat("i", 40),
-		"app-music":      strings.Repeat("m", 40),
-		"app-speech":     strings.Repeat("s", 40),
-		"app-comfyui":    strings.Repeat("c", 40),
-		"app-blender":    strings.Repeat("b", 40),
-		"station-core":   strings.Repeat("r", 40),
-		"app-resources":  strings.Repeat("p", 40),
+		"admin":         strings.Repeat("a", 40),
+		"node_agent":    strings.Repeat("n", 40),
+		"app-video":     strings.Repeat("v", 40),
+		"app-image":     strings.Repeat("i", 40),
+		"app-music":     strings.Repeat("m", 40),
+		"app-speech":    strings.Repeat("s", 40),
+		"app-comfyui":   strings.Repeat("c", 40),
+		"app-blender":   strings.Repeat("b", 40),
+		"station-core":  strings.Repeat("r", 40),
+		"app-resources": strings.Repeat("p", 40),
 	}
 	regJSON := `[
 		{"app_id":"station-admin","kind":"admin","token_env":"TOK_ADMIN"},
@@ -2369,7 +2369,6 @@ func TestP1bColdStartBindTargetWarmProofAndAbortUnstarted(t *testing.T) {
 	verifyAllCardHashChains(t, ctx, fix.pool, fix.stationID)
 }
 
-
 func TestResidencyEvictForceDrainAndSnapshotP2(t *testing.T) {
 	fix := setupSchedulerDB(t)
 	ctx := context.Background()
@@ -3423,5 +3422,114 @@ func TestP2ForceDrainS0S1RealHTTPIdempotencyAndConcurrencyCAS(t *testing.T) {
 		}
 	}
 
+	verifyAllCardHashChains(t, ctx, fix.pool, fix.stationID)
+}
+
+func TestUnboundLeaseFiveGateConvergenceAndBindDeadlineDB(t *testing.T) {
+	fix := setupSchedulerDB(t)
+	ctx := context.Background()
+
+	imgCaller := CallerIdentity{AppID: "app-image", Kind: CallerConsumer}
+	nodeCaller := CallerIdentity{AppID: "node-5090-agent", Kind: CallerNodeAgent}
+
+	unboundDec, err := fix.svc.Acquire(ctx, imgCaller, AcquireRequest{
+		IdempotencyKey:    "e01-unbound-moss-1",
+		ConsumerKind:      "moss-image",
+		AttemptID:         "att-unbound-1",
+		CandidateGPUUUIDs: []string{"GPU-0001"},
+		TTLSeconds:        300,
+	})
+	if err != nil || unboundDec.State != "leased" {
+		t.Fatalf("Acquire unbound lease: %+v (%v)", unboundDec, err)
+	}
+
+	fix.advanceTime(61 * time.Second)
+	if _, err := fix.svc.BindTarget(ctx, imgCaller, unboundDec.LeaseID, BindTargetRequest{
+		IdempotencyKey: "late-bind-1",
+		FencingToken:   unboundDec.FencingToken,
+		PodUID:         "11111111-2222-3333-4444-555555555555",
+		ContainerID:    strings.Repeat("a", 64),
+		BootID:         "boot-late-1",
+		ActualGPUUUIDs: []string{"GPU-0001"},
+	}); !errors.Is(err, ErrFencingRevoked) {
+		t.Fatalf("expected late BindTarget past 60s deadline to fail ErrFencingRevoked, got %v", err)
+	}
+
+	fix.verifier.defRes = VerifyTerminatedResult{
+		Verified:            true,
+		GPUProcessCount:     0,
+		MeasuredFreeVRAMMiB: 32033,
+		MeasuredUsedVRAMMiB: 574,
+	}
+
+	if err := fix.svc.ReconcileRestart(ctx, RestartObservation{NodeUID: fix.nodeUID, RunNonce: "e01-r1"}); err != nil {
+		t.Fatalf("ReconcileRestart round 1: %v", err)
+	}
+	afterSeal, err := fix.svc.GetLease(ctx, imgCaller, unboundDec.LeaseID)
+	if err != nil || afterSeal.State != "reconciling" {
+		t.Fatalf("expected reconciling after seal round, got %+v (%v)", afterSeal, err)
+	}
+	if _, err := fix.svc.Heartbeat(ctx, imgCaller, unboundDec.LeaseID, HeartbeatRequest{
+		IdempotencyKey: "late-hb-after-seal",
+		FencingToken:   unboundDec.FencingToken,
+	}); !errors.Is(err, ErrFencingRevoked) {
+		t.Fatalf("expected Heartbeat after seal to fail ErrFencingRevoked, got %v", err)
+	}
+
+	fix.advanceTime(16 * time.Second)
+	if err := fix.svc.ReportNodeTelemetry(ctx, nodeCaller, NodeTelemetryReport{
+		NodeUID:      fix.nodeUID,
+		NodeName:     "k3s-5090-dev",
+		AgentBootID:  "boot-e01",
+		SampleID:     20,
+		AgentHealthy: true,
+		Cards: []CardTelemetrySample{
+			{GPUUUID: "GPU-0000", GPUIndex: 0, TotalVRAMMiB: 32607, DriverOverheadMiB: 607, MeasuredFreeVRAMMiB: 32000, MeasuredUsedVRAMMiB: 607, NVMLHealthy: true},
+			{GPUUUID: "GPU-0001", GPUIndex: 1, TotalVRAMMiB: 32607, DriverOverheadMiB: 607, MeasuredFreeVRAMMiB: 32033, MeasuredUsedVRAMMiB: 574, NVMLHealthy: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fix.svc.ReconcileRestart(ctx, RestartObservation{NodeUID: fix.nodeUID, RunNonce: "e01-r2"}); err != nil {
+		t.Fatal(err)
+	}
+	afterS1, err := fix.svc.GetLease(ctx, imgCaller, unboundDec.LeaseID)
+	if err != nil || afterS1.State != "reconciling" {
+		t.Fatalf("single post-grace sample must NOT expire lease, got %+v (%v)", afterS1, err)
+	}
+
+	fix.advanceTime(5 * time.Second)
+	if err := fix.svc.ReportNodeTelemetry(ctx, nodeCaller, NodeTelemetryReport{
+		NodeUID:      fix.nodeUID,
+		NodeName:     "k3s-5090-dev",
+		AgentBootID:  "boot-e01",
+		SampleID:     21,
+		AgentHealthy: true,
+		Cards: []CardTelemetrySample{
+			{GPUUUID: "GPU-0000", GPUIndex: 0, TotalVRAMMiB: 32607, DriverOverheadMiB: 607, MeasuredFreeVRAMMiB: 32000, MeasuredUsedVRAMMiB: 607, NVMLHealthy: true},
+			{GPUUUID: "GPU-0001", GPUIndex: 1, TotalVRAMMiB: 32607, DriverOverheadMiB: 607, MeasuredFreeVRAMMiB: 32033, MeasuredUsedVRAMMiB: 574, NVMLHealthy: true},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fix.svc.ReconcileRestart(ctx, RestartObservation{NodeUID: fix.nodeUID, RunNonce: "e01-r3"}); err != nil {
+		t.Fatal(err)
+	}
+	afterS2, err := fix.svc.GetLease(ctx, imgCaller, unboundDec.LeaseID)
+	if err != nil || afterS2.State != "expired" {
+		t.Fatalf("expected lease expired after 2 consecutive idle samples, got %+v (%v)", afterS2, err)
+	}
+	var reasonCode string
+	if err := fix.pool.QueryRow(ctx, `
+		SELECT reason_code FROM station.gpu_scheduler_events
+		 WHERE station_id=$1 AND entity_id=$2 AND to_state='expired'
+		 ORDER BY card_event_seq DESC LIMIT 1
+	`, fix.stationID, unboundDec.LeaseID).Scan(&reasonCode); err != nil || reasonCode != ReasonReconciledUnboundIdleGPU {
+		t.Fatalf("expected audit reason %s, got %q (%v)", ReasonReconciledUnboundIdleGPU, reasonCode, err)
+	}
+	snapFinal, err := fix.svc.Snapshot(ctx)
+	if err != nil || snapFinal.Cards[1].State != "ready" {
+		t.Fatalf("expected GPU-0001 recovered to ready, got %+v (%v)", snapFinal, err)
+	}
 	verifyAllCardHashChains(t, ctx, fix.pool, fix.stationID)
 }

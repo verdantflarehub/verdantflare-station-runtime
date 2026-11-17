@@ -78,7 +78,7 @@ func setPodSpecHash(pod *corev1.Pod, key string) {
 }
 
 func legacyHelperObjects(in Identity, p HelperProfile, b VolumeBinding) (*corev1.Pod, *corev1.Service, error) {
-	if !validIdentity(in) || !p.StorageProfile.valid() || !sameReservation(b, in, p.StorageProfile) || b.Retained || !imageVersion.MatchString(p.Image) || p.MaxFileBytes < 1 || p.MaxFileBytes > b.ReservedBytes {
+	if !validIdentity(in) || !p.StorageProfile.valid() || !sameWorkspacePool(b, in, p.StorageProfile) || b.Retained || !imageVersion.MatchString(p.Image) || p.MaxFileBytes < 1 || p.MaxFileBytes > b.ReservedBytes {
 		return nil, nil, ErrInvalid
 	}
 	name := instanceName(in) + "-prepare"

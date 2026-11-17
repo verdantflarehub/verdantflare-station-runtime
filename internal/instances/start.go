@@ -46,11 +46,14 @@ func (r StartRequest) valid(p HelperProfile) bool {
 }
 
 type startState struct {
-	SecretUID     string               `json:"secret_uid"`
-	Worker        WorkerObservation    `json:"worker"`
-	Proof         *RunningProof        `json:"proof,omitempty"`
-	Recovery      *workerRecovery      `json:"recovery,omitempty"`
-	SavedRecovery *savedSourceRecovery `json:"saved_recovery,omitempty"`
+	SecretUID      string               `json:"secret_uid"`
+	Worker         WorkerObservation    `json:"worker"`
+	Proof          *RunningProof        `json:"proof,omitempty"`
+	Recovery       *workerRecovery      `json:"recovery,omitempty"`
+	SavedRecovery  *savedSourceRecovery `json:"saved_recovery,omitempty"`
+	TerminalCode   string               `json:"terminal_code,omitempty"`
+	TerminalReason string               `json:"terminal_reason,omitempty"`
+	SupersededBy   string               `json:"superseded_by,omitempty"`
 }
 
 type StartProgress struct {
@@ -105,29 +108,40 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	if err != nil {
 		return out, err
 	}
-	p, ok = s.pinnedProfile(in.ProfileID, creationHash)
-	if !ok || !in.valid(p) || (!newOperation && !bytes.Equal(profileHash, p.Hash[:])) {
+	createdProfile, ok := s.pinnedProfile(in.ProfileID, creationHash)
+	if !ok || !in.valid(createdProfile) {
+		return out, ErrBinding
+	}
+	if newOperation {
+		p = s.withCapacity(p)
+	} else {
+		p, ok = s.pinnedProfile(in.ProfileID, profileHash)
+		if !ok || !bytes.Equal(profileHash, p.Hash[:]) {
+			return out, ErrBinding
+		}
+	}
+	if !in.valid(p) {
 		return out, ErrBinding
 	}
 	var created CreateRequest
 	var prepared createState
 	if json.Unmarshal(creationInput, &created) != nil || json.Unmarshal(creationState, &prepared) != nil || prepared.SecretUID == "" || prepared.Proof == nil ||
-		created.identity() != in.identity() || created.ProfileID != in.ProfileID || created.SourceRevisionID != in.SourceRevisionID || !bytes.Equal(creationHash, p.Hash[:]) || creationStatus != "succeeded" || creationPhase != "stopped" {
+		created.identity() != in.identity() || created.ProfileID != in.ProfileID || created.SourceRevisionID != in.SourceRevisionID || !bytes.Equal(creationHash, createdProfile.Hash[:]) || creationStatus != "succeeded" || creationPhase != "stopped" {
 		return out, ErrBinding
 	}
 	binding, err := scanBinding(tx.QueryRow(ctx, `SELECT `+bindingColumns+` FROM station.runtime_instance_workspaces WHERE instance_id=$1`, in.InstanceID))
 	if err != nil {
 		return out, err
 	}
-	if !sameReservation(binding, in.identity(), p.StorageProfile) || binding.Retained {
+	if !sameReservation(binding, in.identity(), createdProfile.StorageProfile) || !s.compatibleReservation(binding, in.identity(), p.StorageProfile) || binding.Retained {
 		return out, ErrBinding
 	}
 	out.Workspace = &binding
 	state := startState{SecretUID: prepared.SecretUID}
 	if newOperation {
-		var action, status, phase string
+		var priorOpID, action, status, phase string
 		var lastState, lastInput []byte
-		err = tx.QueryRow(ctx, `SELECT action,status,phase,state,input FROM station.runtime_instance_executions WHERE instance_id=$1 AND action<>'create' ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID).Scan(&action, &status, &phase, &lastState, &lastInput)
+		err = tx.QueryRow(ctx, `SELECT operation_id::text,action,status,phase,state,input FROM station.runtime_instance_executions WHERE instance_id=$1 AND action<>'create' ORDER BY created_at DESC,operation_id DESC LIMIT 1`, in.InstanceID).Scan(&priorOpID, &action, &status, &phase, &lastState, &lastInput)
 		if errors.Is(err, pgx.ErrNoRows) {
 			if in.source() != (WorkerSource{created.SourceRevisionID, created.SourceSHA256, created.SourceSize, created.EmptySource}) {
 				return out, ErrBinding
@@ -143,6 +157,21 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 			if action == "start" && status == "succeeded" && phase == "running" {
 				state.Recovery, err = prepareWorkerRecovery(ctx, s.Client, in, p, binding, lastInput, lastState)
 				if err != nil {
+					return out, err
+				}
+				var priorExecState startState
+				if json.Unmarshal(lastState, &priorExecState) != nil {
+					return out, ErrBinding
+				}
+				termCode := state.Recovery.TerminalCode
+				if termCode == "" {
+					termCode = "worker_exited"
+				}
+				priorExecState.TerminalCode = termCode
+				priorExecState.TerminalReason = state.Recovery.TerminalReason
+				priorExecState.SupersededBy = in.OperationID
+				updatedPriorStateRaw, _ := json.Marshal(priorExecState)
+				if _, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET status='failed',phase='failed',error_code=$2,state=$3,updated_at=now() WHERE operation_id=$1`, priorOpID, termCode, updatedPriorStateRaw); err != nil {
 					return out, err
 				}
 			} else {
@@ -169,7 +198,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		out.Worker = &state.Worker
 	}
 	out.Proof = state.Proof
-	out.SourceRecovery = state.sourceRecoveryProof()
+	out.SourceRecovery = state.sourceRecoveryProof(in)
 	if out.Status != "running" {
 		return out, tx.Commit(ctx)
 	}
@@ -188,7 +217,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		if err = verifyFailedWorker(ctx, s.Client, p, *state.Recovery, true); err != nil {
 			return out, err
 		}
-		gone, e := removeWorker(ctx, s.Client, state.Recovery.Start, p, binding, state.Recovery.Worker)
+		gone, e := removeTerminalWorker(ctx, s.Client, state.Recovery.Start, p, binding, state.Recovery.Worker)
 		if e != nil {
 			return out, e
 		}
@@ -209,7 +238,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 			return out, err
 		}
 		out.Phase, out.Worker, out.Proof = "recovering", nil, nil
-		out.SourceRecovery = state.sourceRecoveryProof()
+		out.SourceRecovery = state.sourceRecoveryProof(in)
 		stateRaw, _ = json.Marshal(state)
 		_, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET phase=$2,state=$3,error_code='',updated_at=now() WHERE operation_id=$1`, in.OperationID, out.Phase, stateRaw)
 		if err != nil {
@@ -224,7 +253,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	state.Worker, err = EnsureWorker(ctx, s.Client, in.identity(), p, binding, in.OperationID, state.SecretUID, effective.source(), state.Worker)
 	if errors.Is(err, ErrWorkerExited) && state.SavedRecovery == nil && state.Proof == nil && state.Worker.PodUID != "" {
 		// Older in-flight recovery operations did not persist a saved-copy flag.
-		// Prove their origin from the preceding successful execution, not from an
+		// Prove their origin from the preceding start execution, not from an
 		// arbitrary caller field or a caller-supplied replacement digest.
 		var priorInput, priorState []byte
 		var priorAction, priorStatus, priorPhase string
@@ -232,7 +261,8 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		if err != nil {
 			return out, err
 		}
-		if priorAction != "start" || priorStatus != "succeeded" || priorPhase != "running" {
+		priorTerminalSettled := priorStatus == "failed" && priorPhase == "failed"
+		if priorAction != "start" || (!priorTerminalSettled && (priorStatus != "succeeded" || priorPhase != "running")) {
 			return out, ErrBinding
 		}
 		if err = validateRecoveryOrigin(in, p, priorInput, priorState); err != nil {
@@ -243,7 +273,7 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 		}
 		state.SavedRecovery = &savedSourceRecovery{Stage: "removing_worker", PreviousWorker: state.Worker}
 		out.Phase, out.Worker, out.Proof = "recovering", nil, nil
-		out.SourceRecovery = state.sourceRecoveryProof()
+		out.SourceRecovery = state.sourceRecoveryProof(in)
 		stateRaw, _ = json.Marshal(state)
 		_, err = tx.Exec(ctx, `UPDATE station.runtime_instance_executions SET phase=$2,state=$3,error_code='',updated_at=now() WHERE operation_id=$1`, in.OperationID, out.Phase, stateRaw)
 		if err != nil {

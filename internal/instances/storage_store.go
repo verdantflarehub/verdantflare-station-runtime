@@ -3,7 +3,9 @@ package instances
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,6 +27,12 @@ func scanBinding(row pgx.Row) (VolumeBinding, error) {
 
 func sameReservation(b VolumeBinding, in Identity, p StorageProfile) bool {
 	return b.Identity == in && b.ProfileID == p.ID && bytes.Equal(b.ProfileHash, p.Hash[:]) && b.Namespace == p.Namespace && b.Pool == p.Pool && b.NodeName == p.NodeName && b.ReservedBytes == p.Bytes
+}
+
+func sameWorkspacePool(b VolumeBinding, in Identity, p StorageProfile) bool {
+	return b.Identity == in && b.ProfileID == p.ID && len(b.ProfileHash) == sha256.Size &&
+		b.Namespace == p.Namespace && b.Pool == p.Pool && b.NodeName == p.NodeName &&
+		b.ReservedBytes == p.Bytes && slices.Contains(p.Claims, b.PVCName)
 }
 
 // Reserve commits ownership before any Kubernetes mutation. It never discards a

@@ -273,7 +273,7 @@ func (a *Agent) VerifyTerminated(ctx context.Context, req scheduler.VerifyTermin
 	if mode == "" {
 		mode = "container_exited"
 	}
-	if mode != "container_exited" && mode != "epoch_unload" && mode != "warm_idle_settled" {
+	if mode != "container_exited" && mode != "epoch_unload" && mode != "warm_idle_settled" && mode != "card_idle" {
 		return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
 	}
 
@@ -281,6 +281,84 @@ func (a *Agent) VerifyTerminated(ctx context.Context, req scheduler.VerifyTermin
 	targetPodUID := normalizePodUID(req.PodUID)
 	targetCID := strings.ToLower(NormalizeContainerID(req.ContainerID))
 	targetBootID := strings.TrimSpace(req.BootID)
+
+	if mode == "card_idle" {
+		if targetGPU == "" {
+			return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+		}
+		nvmlSnap, procs, err := a.sampleNVMLAndProcsAtomically(ctx)
+		if err != nil {
+			return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+		}
+		var dev GPUDeviceObservation
+		gpuFound := false
+		for _, candidate := range nvmlSnap.Devices {
+			if candidate.GPUUUID == targetGPU {
+				if !candidate.NVMLHealthy {
+					return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+				}
+				dev = candidate
+				gpuFound = true
+				break
+			}
+		}
+		if !gpuFound {
+			return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+		}
+		procByPID := make(map[int]ProcEntry, len(procs))
+		for _, p := range procs {
+			procByPID[p.PID] = p
+		}
+		var survivingPIDs []int
+		seenPID := map[int]bool{}
+		unkillableD := false
+		for _, gp := range nvmlSnap.Processes {
+			if gp.GPUUUID != targetGPU {
+				continue
+			}
+			p, exists := procByPID[gp.PID]
+			if !exists {
+				return scheduler.VerifyTerminatedResult{ErrorCode: "UNKNOWN_NODE_STATE"}, scheduler.ErrNodeStateUnknown
+			}
+			if !seenPID[gp.PID] {
+				seenPID[gp.PID] = true
+				survivingPIDs = append(survivingPIDs, gp.PID)
+			}
+			if p.State == "D" {
+				unkillableD = true
+			}
+		}
+		sort.Ints(survivingPIDs)
+		gpuProcCount := len(survivingPIDs)
+		verified := gpuProcCount == 0 && !unkillableD && dev.MeasuredUsedVRAMMiB <= scheduler.IdleDriverNoiseCapMiB
+		errCode := ""
+		if !verified {
+			if gpuProcCount > 0 {
+				errCode = "CARD_COMPUTE_PROCESS_ACTIVE"
+			} else if dev.MeasuredUsedVRAMMiB > scheduler.IdleDriverNoiseCapMiB {
+				errCode = "CARD_USED_VRAM_ABOVE_NOISE_CAP"
+			}
+		}
+		return scheduler.VerifyTerminatedResult{
+			Verified:            verified,
+			GPUProcessCount:     gpuProcCount,
+			MeasuredFreeVRAMMiB: dev.MeasuredFreeVRAMMiB,
+			MeasuredUsedVRAMMiB: dev.MeasuredUsedVRAMMiB,
+			SurvivingPIDs:       survivingPIDs,
+			UnkillableDState:    unkillableD,
+			ErrorCode:           errCode,
+			RawProof: map[string]any{
+				"node_uid":               a.NodeUID,
+				"agent_boot_id":          a.bootID(),
+				"mode":                   mode,
+				"gpu_uuid":               targetGPU,
+				"gpu_process_count":      gpuProcCount,
+				"measured_used_vram_mib": dev.MeasuredUsedVRAMMiB,
+				"measured_free_vram_mib": dev.MeasuredFreeVRAMMiB,
+				"sampled_at":             nvmlSnap.SampledAt.Format(time.RFC3339Nano),
+			},
+		}, nil
+	}
 
 	// Fail-closed identity gates (P1-H2): never verify termination on empty GPUUUID, PodUID, ContainerID, BootID, or nil CRI.
 	if targetGPU == "" || targetPodUID == "" || targetCID == "" || a.CRI == nil {
@@ -752,9 +830,8 @@ func (a *Agent) BuildTelemetryReport(ctx context.Context) (scheduler.NodeTelemet
 			rep.ErrorCode = "UNATTRIBUTED_MISSING_PROC"
 			continue
 		}
-		if p.PodUID == "" && p.ContainerID == "" {
-			continue
-		}
+		// Include ALL NVML compute/graphics processes on the physical GPU (including non-K8s host
+		// processes with empty PodUID/ContainerID) so per-card process telemetry never drops host compute apps.
 		attrByGPU[gp.GPUUUID] = append(attrByGPU[gp.GPUUUID], scheduler.AttributedGPUProcess{
 			PodUID:         p.PodUID,
 			ContainerID:    p.ContainerID,

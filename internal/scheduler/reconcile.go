@@ -1414,16 +1414,18 @@ func (s *Service) Downgrade(ctx context.Context, caller CallerIdentity, leaseID 
 	var holderApp, snapState, snapStage, nodeUID, podUID, containerID, bootID string
 	var gpuUUIDs []string
 	var curPeak, curFence, snapVer int64
-	var curExpiresAt time.Time
-	var cacheRaw []byte
+	var curExpiresAt, snapCreatedAt, snapUpdatedAt time.Time
+	var cacheRaw, proofRaw []byte
 	err := s.Pool.QueryRow(ctx, `
 		SELECT holder_app_id, state, stage_id, node_uid, pod_uid, container_id, boot_id,
-		       gpu_uuids, peak_budget_mib, fencing_token, version, expires_at, response_cache
+		       gpu_uuids, peak_budget_mib, fencing_token, version, expires_at, response_cache,
+		       reclaim_proof, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND lease_id = $2
 	`, s.StationID, leaseID).Scan(
 		&holderApp, &snapState, &snapStage, &nodeUID, &podUID, &containerID, &bootID,
 		&gpuUUIDs, &curPeak, &curFence, &snapVer, &curExpiresAt, &cacheRaw,
+		&proofRaw, &snapCreatedAt, &snapUpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LeaseDecision{}, ErrLeaseNotFound
@@ -1442,6 +1444,10 @@ func (s *Service) Downgrade(ctx context.Context, caller CallerIdentity, leaseID 
 	if len(cacheRaw) > 0 {
 		_ = json.Unmarshal(cacheRaw, &cacheMap)
 	}
+	proofMap := map[string]any{}
+	if len(proofRaw) > 0 {
+		_ = json.Unmarshal(proofRaw, &proofMap)
+	}
 	if prevKey, _ := cacheMap["last_hb_key"].(string); prevKey == req.IdempotencyKey {
 		prevSHA, _ := cacheMap["last_hb_sha256"].(string)
 		if prevSHA != reqHash {
@@ -1450,13 +1456,15 @@ func (s *Service) Downgrade(ctx context.Context, caller CallerIdentity, leaseID 
 		return s.GetLease(ctx, caller, leaseID)
 	}
 
-	if snapState == "released" || snapState == "expired" || snapState == "reclaiming" || snapState == "quarantined" {
+	nowSnap := s.now()
+	if snapState == "released" || snapState == "expired" || snapState == "reclaiming" || snapState == "quarantined" ||
+		isRevokedOrPastUnboundDeadline(snapState, podUID, containerID, bootID, cacheMap, proofMap, snapCreatedAt, snapUpdatedAt, nowSnap) {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if snapState != "leased" && snapState != "running" {
 		return LeaseDecision{}, ErrLeaseInactive
 	}
-	if !curExpiresAt.After(s.now()) || req.FencingToken != curFence {
+	if !curExpiresAt.After(nowSnap) || req.FencingToken != curFence {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if req.ExpectedVersion > 0 && req.ExpectedVersion != snapVer {
@@ -1594,16 +1602,28 @@ func (s *Service) Downgrade(ctx context.Context, caller CallerIdentity, leaseID 
 
 	var curState, curStage, curPod, curCID, curBoot string
 	var curVer int64
+	var curCreatedAt, curUpdatedAt time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT state, stage_id, pod_uid, container_id, boot_id, fencing_token, version, expires_at, response_cache
+		SELECT state, stage_id, pod_uid, container_id, boot_id, fencing_token, version, expires_at, response_cache, reclaim_proof, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND lease_id = $2
 		   FOR UPDATE
-	`, s.StationID, leaseID).Scan(&curState, &curStage, &curPod, &curCID, &curBoot, &curFence, &curVer, &curExpiresAt, &cacheRaw)
+	`, s.StationID, leaseID).Scan(&curState, &curStage, &curPod, &curCID, &curBoot, &curFence, &curVer, &curExpiresAt, &cacheRaw, &proofRaw, &curCreatedAt, &curUpdatedAt)
 	if err != nil {
 		return LeaseDecision{}, err
 	}
-	if curState == "released" || curState == "expired" || curState == "reclaiming" || curState == "quarantined" || !curExpiresAt.After(s.now()) || curFence != req.FencingToken {
+	cacheMap = map[string]any{}
+	if len(cacheRaw) > 0 {
+		_ = json.Unmarshal(cacheRaw, &cacheMap)
+	}
+	proofMap = map[string]any{}
+	if len(proofRaw) > 0 {
+		_ = json.Unmarshal(proofRaw, &proofMap)
+	}
+	now := s.now()
+	if curState == "released" || curState == "expired" || curState == "reclaiming" || curState == "quarantined" ||
+		isRevokedOrPastUnboundDeadline(curState, curPod, curCID, curBoot, cacheMap, proofMap, curCreatedAt, curUpdatedAt, now) ||
+		!curExpiresAt.After(now) || curFence != req.FencingToken {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if curVer != snapVer || curState != snapState || curStage != snapStage {
@@ -1613,12 +1633,7 @@ func (s *Service) Downgrade(ctx context.Context, caller CallerIdentity, leaseID 
 		return LeaseDecision{}, err
 	}
 
-	now := s.now()
 	expiresAt := now.Add(time.Duration(req.TTLSeconds) * time.Second)
-	cacheMap = map[string]any{}
-	if len(cacheRaw) > 0 {
-		_ = json.Unmarshal(cacheRaw, &cacheMap)
-	}
 	cacheMap["last_hb_key"] = req.IdempotencyKey
 	cacheMap["last_hb_sha256"] = reqHash
 	newCacheRaw, _ := json.Marshal(cacheMap)
@@ -1752,16 +1767,18 @@ func (s *Service) stageHandoff(ctx context.Context, caller CallerIdentity, lease
 	var holderApp, snapState, snapStage, nodeUID, podUID, containerID, bootID string
 	var gpuUUIDs []string
 	var curPeak, curFence, snapVer int64
-	var curExpiresAt time.Time
-	var cacheRaw []byte
+	var curExpiresAt, snapCreatedAt, snapUpdatedAt time.Time
+	var cacheRaw, proofRaw []byte
 	err := s.Pool.QueryRow(ctx, `
 		SELECT holder_app_id, state, stage_id, node_uid, pod_uid, container_id, boot_id,
-		       gpu_uuids, peak_budget_mib, fencing_token, version, expires_at, response_cache
+		       gpu_uuids, peak_budget_mib, fencing_token, version, expires_at, response_cache,
+		       reclaim_proof, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND lease_id = $2
 	`, s.StationID, leaseID).Scan(
 		&holderApp, &snapState, &snapStage, &nodeUID, &podUID, &containerID, &bootID,
 		&gpuUUIDs, &curPeak, &curFence, &snapVer, &curExpiresAt, &cacheRaw,
+		&proofRaw, &snapCreatedAt, &snapUpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LeaseDecision{}, ErrLeaseNotFound
@@ -1780,6 +1797,10 @@ func (s *Service) stageHandoff(ctx context.Context, caller CallerIdentity, lease
 	if len(cacheRaw) > 0 {
 		_ = json.Unmarshal(cacheRaw, &cacheMap)
 	}
+	proofMap := map[string]any{}
+	if len(proofRaw) > 0 {
+		_ = json.Unmarshal(proofRaw, &proofMap)
+	}
 	if prevKey, _ := cacheMap["last_hb_key"].(string); prevKey == req.IdempotencyKey {
 		prevSHA, _ := cacheMap["last_hb_sha256"].(string)
 		if prevSHA != reqHash {
@@ -1787,13 +1808,15 @@ func (s *Service) stageHandoff(ctx context.Context, caller CallerIdentity, lease
 		}
 		return s.GetLease(ctx, caller, leaseID)
 	}
-	if snapState == "released" || snapState == "expired" || snapState == "reclaiming" || snapState == "quarantined" {
+	nowSnap := s.now()
+	if snapState == "released" || snapState == "expired" || snapState == "reclaiming" || snapState == "quarantined" ||
+		isRevokedOrPastUnboundDeadline(snapState, podUID, containerID, bootID, cacheMap, proofMap, snapCreatedAt, snapUpdatedAt, nowSnap) {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if snapState != "leased" && snapState != "running" {
 		return LeaseDecision{}, ErrLeaseInactive
 	}
-	if !curExpiresAt.After(s.now()) || req.FencingToken != curFence {
+	if !curExpiresAt.After(nowSnap) || req.FencingToken != curFence {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if req.ExpectedVersion > 0 && req.ExpectedVersion != snapVer {
@@ -1917,16 +1940,28 @@ func (s *Service) stageHandoff(ctx context.Context, caller CallerIdentity, lease
 	}
 	var curState, curStage, curPod, curCID, curBoot string
 	var curVer int64
+	var curCreatedAt, curUpdatedAt time.Time
 	err = tx.QueryRow(ctx, `
-		SELECT state, stage_id, pod_uid, container_id, boot_id, fencing_token, version, expires_at, response_cache
+		SELECT state, stage_id, pod_uid, container_id, boot_id, fencing_token, version, expires_at, response_cache, reclaim_proof, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND lease_id = $2
 		   FOR UPDATE
-	`, s.StationID, leaseID).Scan(&curState, &curStage, &curPod, &curCID, &curBoot, &curFence, &curVer, &curExpiresAt, &cacheRaw)
+	`, s.StationID, leaseID).Scan(&curState, &curStage, &curPod, &curCID, &curBoot, &curFence, &curVer, &curExpiresAt, &cacheRaw, &proofRaw, &curCreatedAt, &curUpdatedAt)
 	if err != nil {
 		return LeaseDecision{}, err
 	}
-	if curState == "released" || curState == "expired" || curState == "reclaiming" || curState == "quarantined" || !curExpiresAt.After(s.now()) || curFence != req.FencingToken {
+	cacheMap = map[string]any{}
+	if len(cacheRaw) > 0 {
+		_ = json.Unmarshal(cacheRaw, &cacheMap)
+	}
+	proofMap = map[string]any{}
+	if len(proofRaw) > 0 {
+		_ = json.Unmarshal(proofRaw, &proofMap)
+	}
+	now := s.now()
+	if curState == "released" || curState == "expired" || curState == "reclaiming" || curState == "quarantined" ||
+		isRevokedOrPastUnboundDeadline(curState, curPod, curCID, curBoot, cacheMap, proofMap, curCreatedAt, curUpdatedAt, now) ||
+		!curExpiresAt.After(now) || curFence != req.FencingToken {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if curVer != snapVer || curState != snapState || curStage != snapStage {
@@ -1936,12 +1971,7 @@ func (s *Service) stageHandoff(ctx context.Context, caller CallerIdentity, lease
 		return LeaseDecision{}, err
 	}
 
-	now := s.now()
 	expiresAt := now.Add(time.Duration(req.TTLSeconds) * time.Second)
-	cacheMap = map[string]any{}
-	if len(cacheRaw) > 0 {
-		_ = json.Unmarshal(cacheRaw, &cacheMap)
-	}
 	cacheMap["last_hb_key"] = req.IdempotencyKey
 	cacheMap["last_hb_sha256"] = reqHash
 	newCacheRaw, _ := json.Marshal(cacheMap)
@@ -2095,19 +2125,19 @@ func (s *Service) BindTarget(ctx context.Context, caller CallerIdentity, leaseID
 	var cardCount int
 	var curPeak, curStartupMin, curFence, curVer int64
 	var curHeadroom *int64
-	var curExpiresAt time.Time
-	var cacheRaw []byte
+	var curExpiresAt, curCreatedAt, curUpdatedAt time.Time
+	var cacheRaw, proofRaw []byte
 	err = tx.QueryRow(ctx, `
 		SELECT holder_app_id, state, stage_id, node_uid, pod_uid, container_id, boot_id,
 		       gpu_uuids, card_count, peak_budget_mib, startup_free_min_mib, headroom_override_mib,
-		       priority, fencing_token, version, expires_at, response_cache
+		       priority, fencing_token, version, expires_at, response_cache, reclaim_proof, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND lease_id = $2
 		   FOR UPDATE
 	`, s.StationID, leaseID).Scan(
 		&holderApp, &state, &stageID, &nodeUID, &curPod, &curCID, &curBoot,
 		&curGPUs, &cardCount, &curPeak, &curStartupMin, &curHeadroom,
-		&priority, &curFence, &curVer, &curExpiresAt, &cacheRaw,
+		&priority, &curFence, &curVer, &curExpiresAt, &cacheRaw, &proofRaw, &curCreatedAt, &curUpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LeaseDecision{}, ErrLeaseNotFound
@@ -2135,6 +2165,10 @@ func (s *Service) BindTarget(ctx context.Context, caller CallerIdentity, leaseID
 	if len(cacheRaw) > 0 {
 		_ = json.Unmarshal(cacheRaw, &cacheMap)
 	}
+	proofMap := map[string]any{}
+	if len(proofRaw) > 0 {
+		_ = json.Unmarshal(proofRaw, &proofMap)
+	}
 	if prevKey, _ := cacheMap["last_bind_key"].(string); prevKey == req.IdempotencyKey {
 		prevSHA, _ := cacheMap["last_bind_sha256"].(string)
 		if prevSHA != reqHash {
@@ -2143,13 +2177,14 @@ func (s *Service) BindTarget(ctx context.Context, caller CallerIdentity, leaseID
 		return s.loadDecisionTx(ctx, tx, leaseID, cards)
 	}
 
-	if state == "released" || state == "expired" || state == "reclaiming" || state == "quarantined" {
+	now := s.now()
+	if state == "released" || state == "expired" || state == "reclaiming" || state == "quarantined" ||
+		isRevokedOrPastUnboundDeadline(state, curPod, curCID, curBoot, cacheMap, proofMap, curCreatedAt, curUpdatedAt, now) {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if state != "leased" && state != "running" {
 		return LeaseDecision{}, ErrLeaseInactive
 	}
-	now := s.now()
 	if !curExpiresAt.After(now) || req.FencingToken != curFence {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
@@ -2350,15 +2385,16 @@ func (s *Service) Heartbeat(ctx context.Context, caller CallerIdentity, leaseID 
 	var holderApp, state, stageID, nodeUID, curPod, curCID, curBoot string
 	var gpuUUIDs []string
 	var curPeak, curFence, curVer int64
-	var curExpiresAt time.Time
-	var cacheRaw []byte
+	var curExpiresAt, curCreatedAt, curUpdatedAt time.Time
+	var cacheRaw, proofRaw []byte
 	err = tx.QueryRow(ctx, `
 		SELECT holder_app_id, state, stage_id, node_uid, pod_uid, container_id, boot_id,
-		       gpu_uuids, peak_budget_mib, fencing_token, version, expires_at, response_cache
+		       gpu_uuids, peak_budget_mib, fencing_token, version, expires_at, response_cache,
+		       reclaim_proof, created_at, updated_at
 		  FROM station.gpu_resource_leases
 		 WHERE station_id = $1 AND lease_id = $2
 		   FOR UPDATE
-	`, s.StationID, leaseID).Scan(&holderApp, &state, &stageID, &nodeUID, &curPod, &curCID, &curBoot, &gpuUUIDs, &curPeak, &curFence, &curVer, &curExpiresAt, &cacheRaw)
+	`, s.StationID, leaseID).Scan(&holderApp, &state, &stageID, &nodeUID, &curPod, &curCID, &curBoot, &gpuUUIDs, &curPeak, &curFence, &curVer, &curExpiresAt, &cacheRaw, &proofRaw, &curCreatedAt, &curUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return LeaseDecision{}, ErrLeaseNotFound
 	}
@@ -2376,6 +2412,10 @@ func (s *Service) Heartbeat(ctx context.Context, caller CallerIdentity, leaseID 
 	if len(cacheRaw) > 0 {
 		_ = json.Unmarshal(cacheRaw, &cacheMap)
 	}
+	proofMap := map[string]any{}
+	if len(proofRaw) > 0 {
+		_ = json.Unmarshal(proofRaw, &proofMap)
+	}
 	if prevKey, _ := cacheMap["last_hb_key"].(string); prevKey == req.IdempotencyKey {
 		prevSHA, _ := cacheMap["last_hb_sha256"].(string)
 		if prevSHA != reqHash {
@@ -2384,14 +2424,15 @@ func (s *Service) Heartbeat(ctx context.Context, caller CallerIdentity, leaseID 
 		return s.loadDecisionTx(ctx, tx, leaseID, cards)
 	}
 
-	if state == "released" || state == "expired" || state == "reclaiming" || state == "quarantined" {
+	// P1-H5 & E01 Gate 1: Reject expired, sealed, reconciling, or past-60s-unbound leases immediately!
+	now := s.now()
+	if state == "released" || state == "expired" || state == "reclaiming" || state == "quarantined" ||
+		isRevokedOrPastUnboundDeadline(state, curPod, curCID, curBoot, cacheMap, proofMap, curCreatedAt, curUpdatedAt, now) {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
 	if state != "leased" && state != "running" {
 		return LeaseDecision{}, ErrLeaseInactive
 	}
-	// P1-H5: Reject expired leases in Heartbeat even before background ReconcileRestart runs!
-	now := s.now()
 	if !curExpiresAt.After(now) || req.FencingToken != curFence {
 		return LeaseDecision{}, ErrFencingRevoked
 	}
@@ -3597,15 +3638,26 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 		}
 	}
 
+	cardsByNode := make(map[string]map[string]cardLockState)
+	for _, c := range cardsSnap {
+		if cardsByNode[c.NodeUID] == nil {
+			cardsByNode[c.NodeUID] = make(map[string]cardLockState)
+		}
+		cardsByNode[c.NodeUID][c.GPUUUID] = c
+	}
+
 	type leaseOutcome struct {
-		lease            activeLeaseRow
-		targetState      string
-		reason           string
-		bumpFence        bool
-		revokeAcked      bool
-		quarantineLeak   int64
-		cardUnknown      bool
-		verifiedFreeByID map[string]int64
+		lease               activeLeaseRow
+		targetState         string
+		reason              string
+		bumpFence           bool
+		capExpiresAt        bool
+		unboundDeadlineSeal bool
+		updatedReclaimProof map[string]any
+		revokeAcked         bool
+		quarantineLeak      int64
+		cardUnknown         bool
+		verifiedFreeByID    map[string]int64
 	}
 	var outcomes []leaseOutcome
 
@@ -3619,6 +3671,28 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 					lease:       l,
 					targetState: "expired",
 					reason:      "QUEUE_TTL_OR_POD_EXPIRED",
+				})
+			}
+			continue
+		}
+
+		// E01 Blocker Remediation (Gates 1-5 & 60s UNBOUND_BIND_DEADLINE):
+		// Handle strictly eligible unbound leases via seal-first dual-sample full-card zero-process convergence.
+		// Any lease with non-empty pod_uid/container_id/boot_id or prior bound running renewal returns Handled=false
+		// and remains 100% on the existing VerifyTerminated container-exit / epoch-unload path below.
+		if ubDec := evaluateUnboundLeaseReconcile(ctx, l, cardsByNode[l.NodeUID], s.Verifier, now, s.maxTelemetryAge()); ubDec.Handled {
+			if !ubDec.Skip {
+				outcomes = append(outcomes, leaseOutcome{
+					lease:               l,
+					targetState:         ubDec.TargetState,
+					reason:              ubDec.Reason,
+					bumpFence:           ubDec.BumpFence,
+					capExpiresAt:        ubDec.CapExpiresAt,
+					unboundDeadlineSeal: ubDec.UnboundDeadlineSeal,
+					updatedReclaimProof: ubDec.UpdatedReclaimProof,
+					cardUnknown:         ubDec.CardUnknown,
+					quarantineLeak:      ubDec.QuarantineLeak,
+					verifiedFreeByID:    ubDec.VerifiedFreeByID,
 				})
 			}
 			continue
@@ -3842,6 +3916,7 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 	}
 	corrUUID := uuid.Must(uuid.NewV7()).String()
 
+	unknownCardInRound := map[string]bool{}
 	for _, out := range outcomes {
 		// P1-H6: Lock lease row FOR UPDATE and verify exact CAS against the Step 1 snapshot
 		// so a concurrent Heartbeat/Downgrade/Release/Acquire promotion is NEVER clobbered!
@@ -3870,18 +3945,31 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 		}
 		// Double-check TTL if outcome relied on expiry and Pod is not confirmed gone.
 		podConfirmedGone := obs.LivePodUIDs != nil && curPod != "" && !obs.LivePodUIDs[curPod]
-		if curExpires.After(s.now()) && !podConfirmedGone && curState != "reconciling" && curState != "reclaiming" {
+		if curExpires.After(s.now()) && !podConfirmedGone && !out.unboundDeadlineSeal && curState != "reconciling" && curState != "reclaiming" {
 			continue
 		}
 
 		if err := clearLeaseReservationsTx(ctx, tx, s.StationID, out.lease.LeaseID, cards, obs.RunNonce, out.reason); err != nil {
 			return err
 		}
+
+		nextExpires := curExpires
+		if out.capExpiresAt && curExpires.After(now) {
+			nextExpires = now
+		}
+		var updatedProofRaw []byte
+		hasProofUpdate := out.updatedReclaimProof != nil
+		if hasProofUpdate {
+			updatedProofRaw, _ = json.Marshal(out.updatedReclaimProof)
+		}
+
 		cmdTag, err := tx.Exec(ctx, `
 			UPDATE station.gpu_resource_leases
 			   SET state = $3,
 			       blocking_reason = $4,
 			       revoke_acknowledged = CASE WHEN $5 THEN true ELSE revoke_acknowledged END,
+			       expires_at = $9,
+			       reclaim_proof = CASE WHEN $10 THEN $11::jsonb ELSE reclaim_proof END,
 			       version = version + 1,
 			       updated_at = now()
 			 WHERE station_id = $1
@@ -3889,7 +3977,7 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 			   AND version = $6
 			   AND state = $7
 			   AND fencing_token = $8
-		`, s.StationID, out.lease.LeaseID, out.targetState, strings.ToLower(out.reason), out.revokeAcked, out.lease.Version, out.lease.State, out.lease.FencingToken)
+		`, s.StationID, out.lease.LeaseID, out.targetState, strings.ToLower(out.reason), out.revokeAcked, out.lease.Version, out.lease.State, out.lease.FencingToken, nextExpires, hasProofUpdate, string(updatedProofRaw))
 		if err != nil {
 			return err
 		}
@@ -3902,10 +3990,14 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 				if out.bumpFence {
 					cards[i].FencingEpoch++
 					cards[i].MinFencingToken++
+					if cards[i].MinFencingToken <= out.lease.FencingToken {
+						cards[i].MinFencingToken = out.lease.FencingToken + 1
+					}
 				}
 				if out.cardUnknown {
 					cards[i].State = "reconciling"
 					cards[i].StateReason = "UNKNOWN_NODE_STATE"
+					unknownCardInRound[cards[i].NodeUID+"|"+cards[i].GPUUUID] = true
 				}
 				if out.quarantineLeak > 0 && out.lease.State != "quarantined" {
 					cards[i].QuarantinedMiB += out.quarantineLeak
@@ -4058,7 +4150,12 @@ func (s *Service) ReconcileRestart(ctx context.Context, obs RestartObservation) 
 				return err
 			}
 		}
-		if cards[i].State == "reconciling" && cards[i].StateReason == "UNKNOWN_NODE_STATE" && !hasReconcilingLeaseByNode[cards[i].NodeUID] {
+		if cards[i].State == "reconciling" &&
+			(cards[i].StateReason == "UNKNOWN_NODE_STATE" ||
+				cards[i].StateReason == "PENDING_LEASE_RECONCILIATION" ||
+				cards[i].StateReason == "UNBOUND_LEASE_SEALED") &&
+			!hasReconcilingLeaseByNode[cards[i].NodeUID] &&
+			!unknownCardInRound[cards[i].NodeUID+"|"+cards[i].GPUUUID] {
 			cards[i].State = "ready"
 			cards[i].StateReason = ""
 			if _, err := tx.Exec(ctx, `

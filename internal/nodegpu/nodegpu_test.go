@@ -1228,3 +1228,86 @@ func TestVerifyTerminatedResolvesPodScopedContainerID(t *testing.T) {
 		t.Fatalf("expected unobserved missing container to fail closed, got %v", errNeverObserved)
 	}
 }
+
+func TestBuildTelemetryIncludesHostGPUProcessesAndCardIdleMode(t *testing.T) {
+	procRoot := t.TempDir()
+	// Host non-K8s compute process (cgroup is host user.slice, NOT kubepods -> PodUID="" & ContainerID="").
+	writeFakeProc(t, procRoot, 70888, 1, "python3", "R", "0::/user.slice/user-1000.slice/session-1.scope\n", "python3 host_infer.py", fakeProcOpts{
+		hasNvidiaFD: true,
+		startTicks:  444555,
+	})
+
+	agent := &Agent{
+		NodeUID:     "node-5090-01",
+		NodeName:    "verdentflare-5090",
+		BearerToken: strings.Repeat("h", 40),
+		Proc:        ProcInspector{ProcRoot: procRoot},
+		NVML: stubNVML{
+			snap: NVMLSnapshot{
+				SampledAt: time.Now().UTC(),
+				Devices: []GPUDeviceObservation{
+					{GPUUUID: "GPU-1", GPUIndex: 1, ModelName: "NVIDIA GeForce RTX 5090", TotalVRAMMiB: 32607, MeasuredFreeVRAMMiB: 31700, MeasuredUsedVRAMMiB: 907, NVMLHealthy: true},
+				},
+				Processes: []GPUProcessObservation{
+					{GPUUUID: "GPU-1", PID: 70888, ProcessType: "C", UsedVRAMMiB: 333},
+				},
+			},
+		},
+	}
+
+	// 1. BuildTelemetryReport MUST retain non-K8s host GPU processes in AttributedProcesses (with empty PodUID/ContainerID).
+	rep, err := agent.BuildTelemetryReport(context.Background())
+	if err != nil || !rep.AgentHealthy || len(rep.Cards) != 1 {
+		t.Fatalf("BuildTelemetryReport failed: %+v (%v)", rep, err)
+	}
+	if len(rep.Cards[0].AttributedProcesses) != 1 || rep.Cards[0].AttributedProcesses[0].PID != 70888 || rep.Cards[0].AttributedProcesses[0].PodUID != "" {
+		t.Fatalf("expected host GPU process 70888 retained in AttributedProcesses, got %+v", rep.Cards[0].AttributedProcesses)
+	}
+
+	// 2. VerifyTerminated(mode="card_idle") MUST reject while host compute process 70888 is active even if used VRAM <= 1024 MiB.
+	resBusy, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID: "node-5090-01",
+		GPUUUID: "GPU-1",
+		Mode:    "card_idle",
+	})
+	if err != nil || resBusy.Verified || resBusy.GPUProcessCount != 1 || resBusy.ErrorCode != "CARD_COMPUTE_PROCESS_ACTIVE" {
+		t.Fatalf("expected card_idle rejected due to host compute process, got %+v (%v)", resBusy, err)
+	}
+
+	// 3. Zero GPU processes, but MeasuredUsedVRAMMiB > 1024 MiB -> MUST reject with CARD_USED_VRAM_ABOVE_NOISE_CAP.
+	_ = os.RemoveAll(filepath.Join(procRoot, "70888"))
+	agent.NVML = stubNVML{
+		snap: NVMLSnapshot{
+			SampledAt: time.Now().UTC(),
+			Devices: []GPUDeviceObservation{
+				{GPUUUID: "GPU-1", GPUIndex: 1, ModelName: "NVIDIA GeForce RTX 5090", TotalVRAMMiB: 32607, MeasuredFreeVRAMMiB: 31500, MeasuredUsedVRAMMiB: 1107, NVMLHealthy: true},
+			},
+		},
+	}
+	resNoisy, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID: "node-5090-01",
+		GPUUUID: "GPU-1",
+		Mode:    "card_idle",
+	})
+	if err != nil || resNoisy.Verified || resNoisy.ErrorCode != "CARD_USED_VRAM_ABOVE_NOISE_CAP" {
+		t.Fatalf("expected card_idle rejected when MeasuredUsedVRAMMiB > 1024, got %+v (%v)", resNoisy, err)
+	}
+
+	// 4. Zero GPU processes AND MeasuredUsedVRAMMiB = 574 <= 1024 MiB -> Verified=true!
+	agent.NVML = stubNVML{
+		snap: NVMLSnapshot{
+			SampledAt: time.Now().UTC(),
+			Devices: []GPUDeviceObservation{
+				{GPUUUID: "GPU-1", GPUIndex: 1, ModelName: "NVIDIA GeForce RTX 5090", TotalVRAMMiB: 32607, MeasuredFreeVRAMMiB: 32033, MeasuredUsedVRAMMiB: 574, NVMLHealthy: true},
+			},
+		},
+	}
+	resIdle, err := agent.VerifyTerminated(context.Background(), scheduler.VerifyTerminatedRequest{
+		NodeUID: "node-5090-01",
+		GPUUUID: "GPU-1",
+		Mode:    "card_idle",
+	})
+	if err != nil || !resIdle.Verified || resIdle.GPUProcessCount != 0 || resIdle.MeasuredUsedVRAMMiB != 574 || resIdle.MeasuredFreeVRAMMiB != 32033 {
+		t.Fatalf("expected card_idle Verified=true on clean idle GPU, got %+v (%v)", resIdle, err)
+	}
+}

@@ -84,7 +84,7 @@ func (s *Service) Access(ctx context.Context, in AccessRequest) (WorkerAccess, e
 	if err != nil {
 		return out, err
 	}
-	if !sameReservation(b, request.identity(), p.StorageProfile) || b.Retained {
+	if !s.compatibleReservation(b, request.identity(), p.StorageProfile) || b.Retained {
 		return out, ErrBinding
 	}
 	request, err = effectiveStart(request, state, p)

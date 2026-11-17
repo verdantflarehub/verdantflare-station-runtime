@@ -83,8 +83,8 @@ func TestHistoricalProfilePreservesAccessAndTerminalRecovery(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if worker.Spec.Containers[0].Image != old.Image {
-				t.Fatal("worker upgraded during recovery")
+			if worker.Spec.Containers[0].Image != newer.Image {
+				t.Fatal("worker did not upgrade to current profile during recovery")
 			}
 			worker.Spec.NodeName = old.NodeName
 			worker.Status.Phase = corev1.PodRunning
