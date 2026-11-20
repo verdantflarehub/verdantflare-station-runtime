@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"slices"
 )
 
 type profileConfig struct {
@@ -77,10 +78,16 @@ func (s *Service) pinnedProfile(id string, hash []byte) (HelperProfile, bool) {
 	return s.withCapacity(p), true
 }
 
-func (s *Service) compatibleReservation(b VolumeBinding, in Identity, p StorageProfile) bool {
-	if !sameWorkspacePool(b, in, p) {
-		return false
+func (s *Service) compatibleProfile(b VolumeBinding, in Identity, p HelperProfile) (HelperProfile, bool) {
+	origin, ok := s.pinnedProfile(b.ProfileID, b.ProfileHash)
+	if !ok || !sameReservation(b, in, origin.StorageProfile) || !slices.Contains(origin.Claims, b.PVCName) {
+		return HelperProfile{}, false
 	}
-	_, ok := s.pinnedProfile(b.ProfileID, b.ProfileHash)
-	return ok
+	if !sameWorkspacePoolMeta(b, in, p.StorageProfile) {
+		return HelperProfile{}, false
+	}
+	if !slices.Contains(p.Claims, b.PVCName) {
+		p.Claims = append(slices.Clone(p.Claims), b.PVCName)
+	}
+	return p, true
 }

@@ -164,6 +164,9 @@ func removeTerminalWorker(ctx context.Context, client kubernetes.Interface, star
 	if _, err = Inspect(ctx, client, start.identity(), p.StorageProfile, b.PVCName, &b, allowed); err != nil {
 		return false, err
 	}
+	if err = verifyClaimOwner(ctx, client, start.identity(), b); err != nil {
+		return false, err
+	}
 	if service != nil {
 		uid, rv := service.UID, service.ResourceVersion
 		if err = client.CoreV1().Services(p.Namespace).Delete(ctx, expectedName, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv}}); err != nil && !apierrors.IsNotFound(err) {

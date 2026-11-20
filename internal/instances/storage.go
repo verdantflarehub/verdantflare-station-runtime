@@ -93,6 +93,22 @@ func volumeOwner(in Identity) map[string]string {
 	return map[string]string{instanceKey: in.InstanceID, organizationKey: in.OrganizationID, projectKey: in.ProjectID, operationKey: in.CreateOperationID}
 }
 
+func verifyClaimOwner(ctx context.Context, client kubernetes.Interface, in Identity, b VolumeBinding) error {
+	claim, err := client.CoreV1().PersistentVolumeClaims(b.Namespace).Get(ctx, b.PVCName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if string(claim.UID) != b.PVCUID || claim.Spec.VolumeName != b.PVName || claim.DeletionTimestamp != nil {
+		return ErrBinding
+	}
+	for k, v := range volumeOwner(in) {
+		if claim.Annotations[k] != v {
+			return ErrBinding
+		}
+	}
+	return nil
+}
+
 // Inspect requires both sides of a Bound Retain local-volume pair. A name alone
 // is insufficient: replacement PVCs/PVs must never inherit an old reservation.
 func Inspect(ctx context.Context, client kubernetes.Interface, in Identity, p StorageProfile, claim string, expected *VolumeBinding, allowedPods map[types.UID]bool) (VolumeBinding, error) {

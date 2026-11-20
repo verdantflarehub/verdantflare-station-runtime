@@ -145,7 +145,11 @@ func (s *Service) Stop(ctx context.Context, in StopRequest) (StopProgress, error
 	if err != nil {
 		return out, err
 	}
-	if !s.compatibleReservation(binding, start.identity(), p.StorageProfile) || binding.Retained {
+	if binding.Retained {
+		return out, ErrBinding
+	}
+	p, ok = s.compatibleProfile(binding, start.identity(), p)
+	if !ok {
 		return out, ErrBinding
 	}
 	start, err = effectiveStart(start, state.Execution, p)
@@ -184,6 +188,9 @@ func (s *Service) Stop(ctx context.Context, in StopRequest) (StopProgress, error
 			return out, ErrBinding
 		}
 		if _, err = Inspect(ctx, s.Client, start.identity(), p.StorageProfile, binding.PVCName, &binding, map[types.UID]bool{pod.UID: true}); err != nil {
+			return out, err
+		}
+		if err = verifyClaimOwner(ctx, s.Client, start.identity(), binding); err != nil {
 			return out, err
 		}
 		secret, err := credential(ctx, s.Client, start.identity(), p.Namespace, state.Execution.SecretUID, false)
@@ -247,6 +254,9 @@ func removeWorker(ctx context.Context, client kubernetes.Interface, start StartR
 		allowed[pod.UID] = true
 	}
 	if _, err = Inspect(ctx, client, start.identity(), p.StorageProfile, b.PVCName, &b, allowed); err != nil {
+		return false, err
+	}
+	if err = verifyClaimOwner(ctx, client, start.identity(), b); err != nil {
 		return false, err
 	}
 	if service != nil {

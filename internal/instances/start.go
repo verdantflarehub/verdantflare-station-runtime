@@ -133,7 +133,11 @@ func (s *Service) Start(ctx context.Context, in StartRequest) (StartProgress, er
 	if err != nil {
 		return out, err
 	}
-	if !sameReservation(binding, in.identity(), createdProfile.StorageProfile) || !s.compatibleReservation(binding, in.identity(), p.StorageProfile) || binding.Retained {
+	if !sameReservation(binding, in.identity(), createdProfile.StorageProfile) || binding.Retained {
+		return out, ErrBinding
+	}
+	p, ok = s.compatibleProfile(binding, in.identity(), p)
+	if !ok {
 		return out, ErrBinding
 	}
 	out.Workspace = &binding

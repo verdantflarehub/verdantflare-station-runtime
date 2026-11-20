@@ -29,10 +29,14 @@ func sameReservation(b VolumeBinding, in Identity, p StorageProfile) bool {
 	return b.Identity == in && b.ProfileID == p.ID && bytes.Equal(b.ProfileHash, p.Hash[:]) && b.Namespace == p.Namespace && b.Pool == p.Pool && b.NodeName == p.NodeName && b.ReservedBytes == p.Bytes
 }
 
-func sameWorkspacePool(b VolumeBinding, in Identity, p StorageProfile) bool {
+func sameWorkspacePoolMeta(b VolumeBinding, in Identity, p StorageProfile) bool {
 	return b.Identity == in && b.ProfileID == p.ID && len(b.ProfileHash) == sha256.Size &&
 		b.Namespace == p.Namespace && b.Pool == p.Pool && b.NodeName == p.NodeName &&
-		b.ReservedBytes == p.Bytes && slices.Contains(p.Claims, b.PVCName)
+		b.ReservedBytes == p.Bytes
+}
+
+func sameWorkspacePool(b VolumeBinding, in Identity, p StorageProfile) bool {
+	return sameWorkspacePoolMeta(b, in, p) && slices.Contains(p.Claims, b.PVCName)
 }
 
 // Reserve commits ownership before any Kubernetes mutation. It never discards a
