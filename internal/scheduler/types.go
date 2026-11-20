@@ -157,7 +157,7 @@ type ConsumerProfileSpec struct {
 func DefaultConsumerSpec(kind string) (ConsumerProfileSpec, bool) {
 	exclHdr := ExclusiveCardHeadroomMiB
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "h3", "fasth3", "video.generate", "video.regenerate_2k", "vdn", "sol":
+	case "h3", "fasth3", "video.generate", "video.regenerate_2k", "video.character_swap", "vdn", "sol":
 		return ConsumerProfileSpec{CardCount: 1, PeakBudgetMiB: 29696, StartupFreeMinMiB: 28672, HeadroomOverrideMiB: &exclHdr, Priority: PriorityExclusiveBatch}, true
 	case "rife", "video.interpolate":
 		return ConsumerProfileSpec{CardCount: 1, PeakBudgetMiB: 4096, StartupFreeMinMiB: 8192, Priority: PrioritySharedSlice}, true

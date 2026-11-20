@@ -12,6 +12,15 @@ type mockTelemetry struct {
 	err  error
 }
 
+func TestCharacterSwapExclusiveCardBudget(t *testing.T) {
+	spec, ok := DefaultConsumerSpec("video.character_swap")
+	if !ok || spec.CardCount != 1 || spec.PeakBudgetMiB != 29696 || spec.StartupFreeMinMiB != 28672 ||
+		spec.Priority != PriorityExclusiveBatch || spec.HeadroomOverrideMiB == nil ||
+		*spec.HeadroomOverrideMiB != ExclusiveCardHeadroomMiB {
+		t.Fatalf("unexpected character swap consumer profile: %+v", spec)
+	}
+}
+
 func (m *mockTelemetry) GetGPUs(ctx context.Context) ([]telemetry.GPUMetric, error) {
 	return m.gpus, m.err
 }

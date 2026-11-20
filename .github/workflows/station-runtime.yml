@@ -3,8 +3,8 @@ name: Station Runtime
 env:
   REGISTRY_ENDPOINT: ${{ secrets.REGISTRY_ENDPOINT_ALIYUN }}
   IMAGE_NAME: wod/verdantflare-station
-  IMAGE_VERSION: station-runtime-v0.2.91
-  COLLECTOR_IMAGE_VERSION: station-gpu-collector-v0.2.91
+  IMAGE_VERSION: station-runtime-v0.2.92
+  COLLECTOR_IMAGE_VERSION: station-gpu-collector-v0.2.92
 
 on:
   push:
