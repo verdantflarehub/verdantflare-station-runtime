@@ -1312,6 +1312,14 @@ func (s *Service) acquireInternal(ctx context.Context, caller CallerIdentity, ra
 				maxFence = nextToken
 			}
 		}
+		// Character swap persists its replay watermark on the model service's shared
+		// volume. Its next grant must advance past prior grants on either 5090.
+		// All node cards are locked above. Only selected cards are updated below.
+		if req.ConsumerKind == "video.character_swap" {
+			for _, card := range cards {
+				maxFence = max(maxFence, card.MinFencingToken+1)
+			}
+		}
 		for _, sel := range selected {
 			sel.card.MinFencingToken = maxFence
 			grantedGPUs = append(grantedGPUs, sel.card.GPUUUID)
